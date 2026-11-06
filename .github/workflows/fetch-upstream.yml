@@ -1,0 +1,31 @@
+name: Fetch upstream main
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  fast-forward:
+    if: github.repository == 'neilforest7/kandev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fast-forward the upstream tracking branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_sha=$(gh api repos/kdlbs/kandev/git/ref/heads/main --jq '.object.sha')
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/main" \
+            -f sha="$upstream_sha" -F force=false
+          fork_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          test "$fork_sha" = "$upstream_sha"
+          printf 'main synced to `%s`\n' "$fork_sha" >> "$GITHUB_STEP_SUMMARY"
