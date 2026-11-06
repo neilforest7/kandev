@@ -5,8 +5,7 @@ on:
   schedule:
     - cron: "17 */6 * * *"
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: fetch-upstream-main
@@ -17,10 +16,22 @@ jobs:
     if: github.repository == 'neilforest7/kandev'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    environment: upstream-sync
     steps:
+      - name: Mint an upstream-sync token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.UPSTREAM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.UPSTREAM_SYNC_APP_PRIVATE_KEY }}
+          owner: neilforest7
+          repositories: kandev
+          permission-contents: write
+          permission-workflows: write
+
       - name: Fast-forward the upstream tracking branch
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           upstream_sha=$(gh api repos/kdlbs/kandev/git/ref/heads/main --jq '.object.sha')
