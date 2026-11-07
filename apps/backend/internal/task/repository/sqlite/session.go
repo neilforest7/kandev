@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 
@@ -2242,6 +2243,80 @@ func (r *Repository) UpdateTaskSessionIfCurrentStateRemovingMetadataKeys(
 	return true, nil
 }
 
+// protectedSessionMetadataKeys are server-owned: a caller's metadata map can
+// neither replace nor drop them.
+var protectedSessionMetadataKeys = []string{models.SessionMetaKeyLinearExecutionPin}
+
+// unprotectedSessionMetadataKeys drops server-owned keys from a metadata
+// deletion request.
+func unprotectedSessionMetadataKeys(keys []string) []string {
+	filtered := keys[:0]
+	for _, key := range keys {
+		protected := false
+		for _, owned := range protectedSessionMetadataKeys {
+			if key == owned {
+				protected = true
+				break
+			}
+		}
+		if !protected {
+			filtered = append(filtered, key)
+		}
+	}
+	return filtered
+}
+
+// preserveProtectedSessionMetadata restores server-owned metadata a caller's
+// replacement map must not change. It runs inside the caller's transaction so
+// the stored value it restores is the one committed alongside the update.
+func (r *Repository) preserveProtectedSessionMetadata(
+	ctx context.Context,
+	exec taskSessionExecutor,
+	sessionID string,
+	metadataJSON string,
+) (string, error) {
+	var stored string
+	err := exec.QueryRowContext(ctx, r.db.Rebind(`SELECT COALESCE(metadata, '{}') FROM task_sessions WHERE id = ?`), sessionID).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return metadataJSON, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var current, requested map[string]interface{}
+	if err := json.Unmarshal([]byte(stored), &current); err != nil {
+		return "", fmt.Errorf("read protected session metadata: %w", err)
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &requested); err != nil {
+		return "", fmt.Errorf("read replacement session metadata: %w", err)
+	}
+	changed := false
+	for _, key := range protectedSessionMetadataKeys {
+		value, ok := current[key]
+		if !ok {
+			// Server-owned: a caller cannot create it, only trusted writers may.
+			if _, present := requested[key]; present {
+				delete(requested, key)
+				changed = true
+			}
+			continue
+		}
+		if existing, present := requested[key]; present && reflect.DeepEqual(existing, value) {
+			continue
+		}
+		requested[key] = value
+		changed = true
+	}
+	if !changed {
+		return metadataJSON, nil
+	}
+	encoded, err := json.Marshal(requested)
+	if err != nil {
+		return "", fmt.Errorf("serialize protected session metadata: %w", err)
+	}
+	return string(encoded), nil
+}
+
 func (r *Repository) removeSessionMetadataKeys(
 	ctx context.Context,
 	exec taskSessionExecutor,
@@ -2249,6 +2324,7 @@ func (r *Repository) removeSessionMetadataKeys(
 	keys []string,
 	updatedAt time.Time,
 ) error {
+	keys = unprotectedSessionMetadataKeys(keys)
 	if len(keys) == 0 {
 		return nil
 	}
@@ -3223,9 +3299,13 @@ func (r *Repository) updateSessionMetadataJSON(
 	metadataJSON string,
 	updatedAt time.Time,
 ) error {
+	preserved, err := r.preserveProtectedSessionMetadata(ctx, exec, sessionID, metadataJSON)
+	if err != nil {
+		return err
+	}
 	result, err := exec.ExecContext(ctx, r.db.Rebind(`
 		UPDATE task_sessions SET metadata = ?, updated_at = ? WHERE id = ?
-	`), metadataJSON, updatedAt, sessionID)
+	`), preserved, updatedAt, sessionID)
 	if err != nil {
 		return err
 	}

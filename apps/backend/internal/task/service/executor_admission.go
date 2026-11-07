@@ -44,7 +44,7 @@ func (s *Service) PrepareExecutorAdmission(ctx context.Context, sessionID, execu
 		return ctx, err
 	}
 	if session != nil {
-		if err := denyUnapprovedLinearWatch(ctx, session.TaskID, s.tasks.GetTask); err != nil {
+		if err := s.denyUnauthorizedLinearExecution(ctx, session); err != nil {
 			return ctx, err
 		}
 	}

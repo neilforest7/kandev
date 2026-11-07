@@ -24,6 +24,8 @@ import (
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/events"
 	"github.com/kandev/kandev/internal/events/bus"
+	"github.com/kandev/kandev/internal/execadmission"
+	mcpprofile "github.com/kandev/kandev/internal/mcp/profile"
 	"github.com/kandev/kandev/internal/secrets"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/worktree"
@@ -120,8 +122,12 @@ type Manager struct {
 	// the caller a shell, a file write, or a port preview. Reading a
 	// transcript and running a command in the worktree are different
 	// permissions, so they get different checks.
-	sessionExecCheck  func(ctx context.Context, sessionID string) error
-	executorAdmission func(context.Context, string, string, string) (context.Context, error)
+	sessionExecCheck   func(ctx context.Context, sessionID string) error
+	executorAdmission  func(context.Context, string, string, string) (context.Context, error)
+	executionAdmission func(context.Context, execadmission.Candidate) error
+	executionScope     func(context.Context, string, string) (bool, error)
+	executionMCPPolicy func(context.Context, string, string) (*mcpprofile.Context, error)
+	executionRuntime   func(context.Context, string, string) (string, error)
 
 	// recoveryGuard is the in-memory per-session acquire-or-observe map of
 	// AC-EXECUTORS-SURVIVAL-002.8, taken over the live standalone

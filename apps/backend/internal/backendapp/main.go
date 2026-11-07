@@ -752,7 +752,7 @@ func startAgentInfrastructure(
 	// the handler, and the SSR terminal-list routes call CheckTaskAccess /
 	// CheckEnvironmentAccess / CheckTaskEnvironmentAccess in a route guard.
 	wireLifecycleAccessCheckers(lifecycleMgr, services.Task)
-	wireExecutorAdmission(services.Auth, services.Task, lifecycleMgr)
+	wireExecutorAdmission(services.Auth, services.Task, lifecycleMgr, services.Linear, nil, cfg.ResolvedHomeDir(), log)
 	if services.GitHub != nil {
 		services.GitHub.SetExecutorContext(services.Task.PrepareAutonomousExecutor)
 	}
@@ -841,6 +841,20 @@ func startAgentInfrastructure(
 	// These queries distinguish successfully re-tracked executions from remote
 	// owners whose guarded retry is still pending during startup reconciliation.
 	orchestratorSvc.SetRetrackedSessionChecker(lifecycleMgr.WasSessionRetracked)
+	// The roster resolves native task-session MCP policy through the executor,
+	// which only exists once the orchestrator is built.
+	lifecycleMgr.SetExecutionMCPPolicyResolver(orchestratorSvc.ExecutionRosterMCPProfile)
+	lifecycleMgr.SetExecutionRuntimeResolver(func(ctx context.Context, taskID, _ string) (string, error) {
+		task, err := repos.Task.GetTask(ctx, taskID)
+		if err != nil {
+			return "", err
+		}
+		if task == nil {
+			return "", errors.New("execution roster task is unavailable")
+		}
+		return orchestratorSvc.ExecutionRosterRuntime(ctx, task.WorkspaceID)
+	})
+	services.Task.SetExecutionConfigValidator(lifecycleMgr.ValidateAdmittedExecution)
 	orchestratorSvc.SetPendingRemoteRecoveryChecker(lifecycleMgr.HasPendingRemoteRecovery)
 	orchestratorSvc.SetRouteActionHandler(dynamicRouteActionHandler(
 		repos.Task,
@@ -1554,6 +1568,7 @@ func startGatewayAndServe(
 	startup.AfterReady(ctx, func() { services.Task.StartAutoArchiveLoop(ctx) })
 	services.Task.SetStallDetectionThreshold(cfg.Tasks.StallDetectionThreshold)
 	startup.AfterReady(ctx, func() { services.Task.StartSessionReconciliationLoop(ctx) })
+	startup.AfterReady(ctx, func() { services.Task.StartLinearExecutionWatchdog(ctx) })
 	startup.AfterReady(ctx, func() { services.Task.StartQuickChatExpirationLoop(ctx) })
 	hostUtilityCtx, hostUtilityCancel := context.WithCancel(ctx)
 	hostUtilityReady := make(chan struct{})

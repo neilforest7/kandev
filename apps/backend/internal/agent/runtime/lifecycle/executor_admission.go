@@ -12,5 +12,14 @@ func (sm *SessionManager) admitExecutorPrompt(ctx context.Context, execution *Ag
 		return ctx, nil
 	}
 	metadata := execution.MetadataSnapshot()
-	return sm.executorAdmission(ctx, execution.SessionID, getMetadataString(metadata, "executor_id"), getMetadataString(metadata, "executor_profile_id"))
+	ctx, err := sm.executorAdmission(ctx, execution.SessionID, getMetadataString(metadata, "executor_id"), getMetadataString(metadata, "executor_profile_id"))
+	if err != nil {
+		return ctx, err
+	}
+	if sm.admitExecution != nil {
+		if err := sm.admitExecution(ctx, execution); err != nil {
+			return ctx, err
+		}
+	}
+	return ctx, nil
 }

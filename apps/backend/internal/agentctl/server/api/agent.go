@@ -1629,8 +1629,10 @@ func (s *Server) handleWSSetConfigOption(ctx context.Context, msg *ws.Message) *
 			if err := s.validateReadOnlyModeChange(req.Value); err != nil {
 				return err
 			}
-		} else if s.readOnlyMCPProfile() && req.ConfigID != "model" && req.ConfigID != "reasoning_effort" && req.ConfigID != "collaboration_mode" {
-			return fmt.Errorf("read-only session cannot change this configuration option")
+		} else if s.readOnlyMCPProfile() {
+			if err := s.validateReadOnlyConfigChange(req.ConfigID, req.Value); err != nil {
+				return err
+			}
 		}
 		policy := req.SessionSettingsPolicy
 		if policy == "" {
@@ -1654,6 +1656,21 @@ func (s *Server) readOnlyMCPProfile() bool {
 func (s *Server) validateReadOnlyModeChange(mode string) error {
 	if (mode == "read-only") != s.readOnlyMCPProfile() {
 		return fmt.Errorf("changing read-only mode requires a new session")
+	}
+	return nil
+}
+
+// validateReadOnlyConfigChange keeps a pinned read-only session inside its
+// approved configuration: the approved model is fixed, and reset spellings,
+// which would drop back to a provider default the profile never approved, are
+// refused.
+func (s *Server) validateReadOnlyConfigChange(configID, value string) error {
+	if configID != "reasoning_effort" {
+		return fmt.Errorf("read-only session cannot change this configuration option")
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default", "reset":
+		return fmt.Errorf("read-only session cannot reset this configuration option")
 	}
 	return nil
 }
@@ -1702,6 +1719,12 @@ func (s *Server) handleWSResetSession(ctx context.Context, msg *ws.Message) *ws.
 	var req NewSessionRequest
 	if err := msg.ParsePayload(&req); err != nil {
 		resp, _ := ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "invalid request: "+err.Error(), nil)
+		return resp
+	}
+	// A reset would install a fresh agent generation under the same read-only
+	// authority; the read-only profile requires a new session instead.
+	if s.readOnlyMCPProfile() {
+		resp, _ := ws.NewError(msg.ID, msg.Action, ws.ErrorCodeForbidden, "read-only session cannot be reset; start a new session", nil)
 		return resp
 	}
 

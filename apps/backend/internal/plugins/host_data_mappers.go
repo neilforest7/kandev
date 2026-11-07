@@ -340,10 +340,10 @@ func sessionCodeStatsModelToDTO(s *analyticsmodels.SessionCodeStats) pluginsdk.S
 }
 
 // interactionModelToDTO converts the assembled durable interaction into the
-// public plugin DTO. Timestamps become RFC3339 UTC strings like every other
-// Host DTO. The permission title is the agent's prompt text, which the
-// message row stores as its content — it is agent-authored, not a
-// kandev-injected system block, so it needs no sanitization pass.
+// public plugin DTO. Timestamps use RFC3339Nano because the waiting ledger
+// keys revisions from this DTO. The permission title is the agent's prompt
+// text, which the message row stores as its content — it is agent-authored,
+// not a kandev-injected system block, so it needs no sanitization pass.
 func interactionModelToDTO(i *taskmodels.Interaction) pluginsdk.Interaction {
 	return pluginsdk.Interaction{
 		ID:                i.ID,
@@ -359,8 +359,8 @@ func interactionModelToDTO(i *taskmodels.Interaction) pluginsdk.Interaction {
 		Options:           interactionOptionsToDTOs(i.Options),
 		Questions:         interactionQuestionsToDTOs(i.Questions),
 		AgentDisconnected: i.AgentDisconnected,
-		CreatedAt:         i.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:         i.UpdatedAt.UTC().Format(time.RFC3339),
+		CreatedAt:         i.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         i.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 

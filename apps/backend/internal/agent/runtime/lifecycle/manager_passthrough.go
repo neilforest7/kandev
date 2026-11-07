@@ -163,8 +163,13 @@ func (m *Manager) admitTerminalInput(ctx context.Context, sessionID string, exec
 	if execution != nil {
 		metadata = execution.MetadataSnapshot()
 	}
-	_, err := m.executorAdmission(ctx, sessionID, getMetadataString(metadata, "executor_id"), getMetadataString(metadata, MetadataKeyExecutorProfileID))
-	return err
+	if _, err := m.executorAdmission(ctx, sessionID, getMetadataString(metadata, "executor_id"), getMetadataString(metadata, MetadataKeyExecutorProfileID)); err != nil {
+		return err
+	}
+	if execution == nil {
+		return nil
+	}
+	return m.admitRecoveredExecution(ctx, execution)
 }
 
 // AdmitTerminalInput applies the same admission to direct PTY input.

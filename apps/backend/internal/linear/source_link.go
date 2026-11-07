@@ -17,6 +17,7 @@ var (
 // TaskIssueLink is the host-owned association between a task and its Linear issue.
 type TaskIssueLink struct {
 	WorkspaceID     string
+	OrganizationID  string
 	IssueID         string
 	IssueIdentifier string
 	IssueURL        string
@@ -54,6 +55,7 @@ func (s *Store) GetTaskIssueLink(ctx context.Context, taskID string) (*TaskIssue
 		if len(parts) == 4 && parts[0] == "linear" {
 			generation, genErr := uuid.Parse(parts[3])
 			if canonical, err := WatchIssueIdentity(parts[1], parts[2]); err == nil && genErr == nil && generation != uuid.Nil && generation.String() != watchID && canonical+":"+generation.String() == identity {
+				candidate.OrganizationID = parts[1]
 				candidate.IssueID = parts[2]
 			}
 		}

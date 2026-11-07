@@ -49,8 +49,16 @@ func TestLinearWatchIdentityRecoversArchivedTask(t *testing.T) {
 		if err := repo.CreateTaskSession(ctx, &models.TaskSession{ID: sessionID, TaskID: task.ID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.PrepareExecutorAdmission(ctx, sessionID, "", ""); !errors.Is(err, errLinearWatchApprovalRequired) {
-			t.Fatalf("executor admission for %s: %v", task.ID, err)
+		// A session that has not started an agent is admitted by the final
+		// execution gate; the ownership gate only guards running sessions.
+		if _, err := svc.PrepareExecutorAdmission(ctx, sessionID, "", ""); err != nil {
+			t.Fatalf("executor admission for unstarted %s: %v", task.ID, err)
+		}
+		if err := repo.UpsertExecutorRunning(ctx, &models.ExecutorRunning{TaskID: task.ID, SessionID: sessionID, AgentExecutionID: "execution-" + task.ID, Status: models.ExecutorRunningStatusRunning}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.PrepareExecutorAdmission(ctx, sessionID, "", ""); !errors.Is(err, errLinearExecutionApprovalRequired) {
+			t.Fatalf("executor admission for running %s: %v", task.ID, err)
 		}
 	}
 	unsettled, err := svc.CreateTask(ctx, request())

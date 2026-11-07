@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"strings"
 	"time"
@@ -338,4 +339,18 @@ func cloneMetadata(src map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(src))
 	maps.Copy(out, src)
 	return out
+}
+
+// ResolveWorkspaceRuntime resolves the native runtime bucket a fresh session of
+// this workspace would launch with. The roster uses it so its fingerprint
+// covers the same runtime dimension as real admission.
+func (e *Executor) ResolveWorkspaceRuntime(ctx context.Context, workspaceID string) (string, error) {
+	if workspaceID == "" {
+		return "", errors.New("execution runtime requires a workspace")
+	}
+	config := e.resolveExecutorConfig(ctx, "", workspaceID, nil)
+	if config.ExecutorType == "" {
+		return "", errors.New("execution runtime is unresolved")
+	}
+	return string(models.ExecutorType(config.ExecutorType).Runtime()), nil
 }

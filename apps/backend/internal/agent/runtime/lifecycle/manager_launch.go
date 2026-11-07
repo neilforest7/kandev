@@ -2092,6 +2092,15 @@ func (m *Manager) promoteWorkspaceExecution(ctx context.Context, execution *Agen
 		if !agentConfig.Enabled() {
 			return nil, fmt.Errorf("agent type %q is disabled", agentTypeName)
 		}
+		// Promotion resolves the same final profile, so the trusted gate runs
+		// again before any command field or MCP provider is promoted.
+		admittedProfile, err := m.admitResolvedLaunch(sharedCtx, req, agentTypeName, profileInfo)
+		if err != nil {
+			return nil, err
+		}
+		if admittedProfile.ID != "" {
+			execution.setMetadataValue(MetadataKeyExecutionAdmissionProfile, admittedProfile)
+		}
 		preferNative := m.preferNativeBinary(agentConfig, execution.RuntimeName, execution.MetadataSnapshot())
 		cmds, err := m.buildAgentCommandWithContext(sharedCtx, req, profileInfo, agentConfig, execution.RuntimeName, preferNative)
 		if err != nil {
@@ -2204,6 +2213,12 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 	if err := validateManagedToolPolicyProvider(req.McpProfile, agentTypeName, agentConfig.Runtime()); err != nil {
 		return nil, err
 	}
+	// The trusted execution gate runs on the final resolved profile, before any
+	// workspace, runtime or subprocess side effect.
+	admittedProfile, err := m.admitResolvedLaunch(ctx, req, agentTypeName, profileInfo)
+	if err != nil {
+		return nil, err
+	}
 
 	// 3. Check if session already has an agent running. A workspace-only
 	// execution created by EnsureWorkspaceExecutionForSession /
@@ -2260,6 +2275,9 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 	if err != nil {
 		m.publishLaunchPrepareCompleted(req, nil, progressRecorder, workspacePath, false, err)
 		return nil, err
+	}
+	if admittedProfile.ID != "" {
+		reqWithWorktree.Metadata = admissionProfileMetadata(reqWithWorktree.Metadata, admittedProfile)
 	}
 	finalEnv, err := m.buildEnvForExecution(ctx, executionID, &reqWithWorktree, agentConfig, profileInfo)
 	if err != nil {
