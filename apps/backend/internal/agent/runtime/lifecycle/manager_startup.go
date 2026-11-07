@@ -143,6 +143,9 @@ func (m *Manager) startAgentProcess(ctx context.Context, executionID string) (re
 	if err := m.verifyBuiltinExecution(ctx, execution); err != nil {
 		return err
 	}
+	if err := m.verifyReadOnlyMCPProfile(ctx, execution); err != nil {
+		return err
+	}
 	if err := execution.contextResetAdmissionError(); err != nil {
 		return err
 	}

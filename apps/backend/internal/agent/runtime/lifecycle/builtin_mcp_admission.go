@@ -19,6 +19,39 @@ func (m *Manager) verifyBuiltinExecution(ctx context.Context, execution *AgentEx
 	return nil
 }
 
+func (m *Manager) verifyReadOnlyMCPProfile(ctx context.Context, execution *AgentExecution) error {
+	value, bound := execution.metadataValue(p.BuiltinBindingMetadataKey)
+	var restricted bool
+	if bound {
+		profile, err := p.ParseBuiltinBindingMetadata(value)
+		if err != nil {
+			return err
+		}
+		restricted = profile.ReadOnly
+	}
+	profileID := execution.ExecutionProfileID
+	if profileID == "" {
+		profileID = execution.AgentProfileID
+	}
+	if m.profileResolver == nil || profileID == "" {
+		if restricted {
+			return errors.New("read-only session profile cannot be resolved")
+		}
+		return nil
+	}
+	profile, err := m.profileResolver.ResolveProfile(ctx, profileID)
+	if err != nil || profile == nil {
+		if restricted {
+			return errors.New("read-only session profile cannot be resolved")
+		}
+		return nil
+	}
+	if (profile.Mode == "read-only") != restricted {
+		return errors.New("read-only mode requires a matching bound MCP profile and a new session for changes")
+	}
+	return nil
+}
+
 // BuiltinMCPRecoveryError prevents a retained binding mismatch from becoming a
 // broader fresh-session retry.
 type BuiltinMCPRecoveryError struct{ Cause error }

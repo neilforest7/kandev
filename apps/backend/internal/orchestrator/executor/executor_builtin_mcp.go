@@ -22,8 +22,23 @@ func (e *Executor) PrepareTaskSessionMCPProfile(ctx context.Context, taskID stri
 		}
 	}
 	profile, err := e.resolveTaskSessionMCPProfile(ctx, taskID, session, title)
-	if err != nil || e.builtinPolicyReader == nil {
+	if err != nil {
 		return profile, err
+	}
+	if session != nil {
+		profileID := session.ExecutionProfileID
+		if profileID == "" {
+			profileID = session.AgentProfileID
+		}
+		if profileID != "" {
+			info, resolveErr := e.agentManager.ResolveAgentProfile(ctx, profileID)
+			if resolveErr == nil {
+				profile.ReadOnly = info != nil && info.Mode == "read-only"
+			}
+		}
+	}
+	if e.builtinPolicyReader == nil {
+		return profile, nil
 	}
 	switch profile.Surface {
 	case p.SurfaceExternal, p.SurfaceAutomation, p.SurfaceCoordinator, p.SurfaceManagedConversation:
@@ -71,6 +86,9 @@ func (e *Executor) launchMCPProfile(ctx context.Context, taskID string, session 
 // prepareExistingWorkspaceBuiltin binds the admitted package snapshot before an
 // already prepared workspace starts its first agent process.
 func (e *Executor) prepareExistingWorkspaceBuiltin(ctx context.Context, executionID string, profile *p.Context) error {
+	if profile != nil && profile.ReadOnly && profile.BuiltinPackages == nil {
+		return fmt.Errorf("read-only session requires a new workspace with a bound MCP profile")
+	}
 	if profile == nil || profile.BuiltinPackages == nil {
 		return nil
 	}

@@ -1402,7 +1402,13 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 
 	acpMcpServers, err := m.resolveMcpServersForLaunch(ctx, reqWithWorktree, agentConfig)
 	if err != nil {
+		if reqWithWorktree.McpProfile != nil && reqWithWorktree.McpProfile.ReadOnly {
+			return nil, nil, nil, fmt.Errorf("resolve read-only MCP servers: %w", err)
+		}
 		m.logger.Warn("failed to resolve MCP servers for launch", zap.Error(err))
+	}
+	if err := validateReadOnlyMCPServers(reqWithWorktree.McpProfile != nil && reqWithWorktree.McpProfile.ReadOnly, len(acpMcpServers)); err != nil {
+		return nil, nil, nil, err
 	}
 
 	var mcpServers []McpServerConfig
@@ -1468,7 +1474,7 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 	// agentctl auto-approve environment variable: only the exact six
 	// coordinator tool names are auto-approved, decided by agentctl's own
 	// mode check (docs/specs/coordinator/system-design/copilot.md#permission-policy).
-	if reqWithWorktree.McpMode == mcpmode.Coordinator {
+	if reqWithWorktree.McpMode == mcpmode.Coordinator || (reqWithWorktree.McpProfile != nil && reqWithWorktree.McpProfile.ReadOnly) {
 		autoApproveOverride = boolPtr(false)
 	}
 
@@ -1907,6 +1913,9 @@ func (m *Manager) Launch(ctx context.Context, req *LaunchRequest) (*AgentExecuti
 	if req == nil {
 		return nil, errors.New("launch request is required")
 	}
+	if err := m.restrictReadOnlyMCPProfile(ctx, req); err != nil {
+		return nil, err
+	}
 	if req.McpProfile != nil && req.McpProfile.BuiltinPackages != nil {
 		if err := m.validateBuiltinOwner(ctx, req.TaskID, req.SessionID, req.WorkspaceID, req.McpProfile); err != nil {
 			return nil, err
@@ -1988,6 +1997,26 @@ func (m *Manager) Launch(ctx context.Context, req *LaunchRequest) (*AgentExecuti
 	}
 	execution.bindSuccessorGenerationOwner(ctx, req)
 	return execution, nil
+}
+
+func (m *Manager) restrictReadOnlyMCPProfile(ctx context.Context, req *LaunchRequest) error {
+	if m.profileResolver == nil || executionProfileID(req) == "" {
+		return nil
+	}
+	_, profile, err := m.resolveAgentProfile(ctx, req)
+	if err != nil || profile == nil || profile.Mode != "read-only" {
+		return nil
+	}
+	if req.IsPassthrough || profile.CLIPassthrough {
+		return errors.New("read-only sessions cannot use CLI passthrough")
+	}
+	if req.McpProfile == nil || req.McpProfile.BuiltinPackages == nil {
+		return errors.New("read-only session requires a bound MCP profile")
+	}
+	restricted := mcpprofile.Normalize(*req.McpProfile)
+	restricted.ReadOnly = true
+	req.McpProfile = &restricted
+	return nil
 }
 
 // markAgentStartPending distinguishes a launch that owns an imminent agent

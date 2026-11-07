@@ -1551,6 +1551,9 @@ func (s *Server) handleWSSetMode(ctx context.Context, msg *ws.Message) *ws.Messa
 	}
 	var result streams.ModeResult
 	resp := s.adapterAction(ctx, msg, &req, func(a adapter.AgentAdapter) error {
+		if err := s.validateReadOnlyModeChange(req.ModeID); err != nil {
+			return err
+		}
 		ms, ok := a.(adapter.ModeSettableAdapter)
 		if !ok {
 			return fmt.Errorf("agent does not support mode switching")
@@ -1622,6 +1625,13 @@ func (s *Server) handleWSSetConfigOption(ctx context.Context, msg *ws.Message) *
 		SessionSettingsPolicy streams.SessionSettingsPolicy `json:"session_settings_policy,omitempty"`
 	}
 	return s.adapterAction(ctx, msg, &req, func(a adapter.AgentAdapter) error {
+		if req.ConfigID == "mode" || req.Value == "read-only" {
+			if err := s.validateReadOnlyModeChange(req.Value); err != nil {
+				return err
+			}
+		} else if s.readOnlyMCPProfile() && req.ConfigID != "model" && req.ConfigID != "reasoning_effort" && req.ConfigID != "collaboration_mode" {
+			return fmt.Errorf("read-only session cannot change this configuration option")
+		}
 		policy := req.SessionSettingsPolicy
 		if policy == "" {
 			policy = streams.SessionSettingsPolicyStrict
@@ -1635,6 +1645,17 @@ func (s *Server) handleWSSetConfigOption(ctx context.Context, msg *ws.Message) *
 		}
 		return cs.SetConfigOption(streams.WithSessionSettingsPolicy(ctx, policy), req.ConfigID, req.Value)
 	})
+}
+
+func (s *Server) readOnlyMCPProfile() bool {
+	return s.cfg != nil && s.cfg.McpProfile != nil && s.cfg.McpProfile.ReadOnly
+}
+
+func (s *Server) validateReadOnlyModeChange(mode string) error {
+	if (mode == "read-only") != s.readOnlyMCPProfile() {
+		return fmt.Errorf("changing read-only mode requires a new session")
+	}
+	return nil
 }
 
 func (s *Server) handleWSAuthenticate(ctx context.Context, msg *ws.Message) *ws.Message {

@@ -26,6 +26,9 @@ func (s *Server) BindInitialProfile(profile p.Context, port int) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.profile.ReadOnly && !profile.ReadOnly {
+		return errors.New("read-only MCP profile cannot be widened")
+	}
 	if s.profile.BuiltinPackages != nil {
 		if sameProfile(s.profile, profile) {
 			return nil

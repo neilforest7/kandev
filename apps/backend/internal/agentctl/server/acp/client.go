@@ -129,7 +129,7 @@ func (c *Client) SetCursorTaskHandler(h CursorTaskHandler) {
 
 // RequestPermission handles permission requests from the agent
 // If a permission handler is set, it forwards the request to the handler.
-// Otherwise, auto-approves by selecting the first "allow" option.
+// Without a handler, the request is cancelled.
 func (c *Client) RequestPermission(ctx context.Context, p acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	ctx, span := shared.TraceProtocolRequest(ctx, shared.ProtocolACP, "", "request.permission")
 	defer span.End()
@@ -166,8 +166,9 @@ func (c *Client) RequestPermission(ctx context.Context, p acp.RequestPermissionR
 		return c.forwardPermissionRequest(ctx, handler, p)
 	}
 
-	// Fall back to auto-approve
-	return c.autoApprovePermission(p)
+	return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+		Cancelled: &acp.RequestPermissionOutcomeCancelled{},
+	}}, nil
 }
 
 // forwardPermissionRequest forwards the permission request to an external handler
@@ -259,45 +260,6 @@ func (c *Client) forwardPermissionRequest(ctx context.Context, handler Permissio
 		Outcome: acp.RequestPermissionOutcome{
 			Selected: &acp.RequestPermissionOutcomeSelected{
 				OptionId: acp.PermissionOptionId(resp.OptionID),
-			},
-		},
-	}, nil
-}
-
-// autoApprovePermission is the no-handler fallback. It selects the first
-// offered option whose kind is an allow and cancels when none exists, because
-// selecting an unrecognized option by position turns a missing handler into a
-// silent approval or a silent refusal depending on the provider's option order.
-func (c *Client) autoApprovePermission(p acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	// Find the first "allow" option
-	var selectedOption *acp.PermissionOption
-	for i := range p.Options {
-		opt := &p.Options[i]
-		if opt.Kind == acp.PermissionOptionKindAllowOnce || opt.Kind == acp.PermissionOptionKindAllowAlways {
-			selectedOption = opt
-			break
-		}
-	}
-
-	if selectedOption == nil {
-		c.logger.Warn("no allow option offered and no permission handler installed, cancelling",
-			zap.Int("option_count", len(p.Options)))
-		return acp.RequestPermissionResponse{
-			Outcome: acp.RequestPermissionOutcome{
-				Cancelled: &acp.RequestPermissionOutcomeCancelled{},
-			},
-		}, nil
-	}
-
-	c.logger.Info("auto-approving permission request",
-		zap.String("option_id", string(selectedOption.OptionId)),
-		zap.String("option_name", selectedOption.Name),
-		zap.String("kind", string(selectedOption.Kind)))
-
-	return acp.RequestPermissionResponse{
-		Outcome: acp.RequestPermissionOutcome{
-			Selected: &acp.RequestPermissionOutcomeSelected{
-				OptionId: selectedOption.OptionId,
 			},
 		},
 	}, nil

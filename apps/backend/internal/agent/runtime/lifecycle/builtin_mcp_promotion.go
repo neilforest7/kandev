@@ -16,6 +16,11 @@ func (m *Manager) prepareBuiltinWorkspaceExecution(ctx context.Context, executio
 	}
 	// A restored execution keeps its original authority, even if desired policy changed.
 	if _, bound := execution.metadataValue(p.BuiltinBindingMetadataKey); bound {
+		value, _ := execution.metadataValue(p.BuiltinBindingMetadataKey)
+		current, err := p.ParseBuiltinBindingMetadata(value)
+		if err != nil || (req.McpProfile.ReadOnly && !current.ReadOnly) {
+			return errors.New("workspace helper does not have the required read-only MCP profile")
+		}
 		return m.verifyBuiltinExecution(ctx, execution)
 	}
 	profile := p.Normalize(*req.McpProfile)
