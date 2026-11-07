@@ -47,12 +47,13 @@ type commentCall struct {
 func NewMockClient() *MockClient {
 	return &MockClient{
 		authResult: &TestConnectionResult{
-			OK:          true,
-			UserID:      "mock-user",
-			DisplayName: "Mock User",
-			Email:       "mock@example.com",
-			OrgSlug:     "mock-org",
-			OrgName:     "Mock Org",
+			OK:             true,
+			UserID:         "mock-user",
+			DisplayName:    "Mock User",
+			Email:          "mock@example.com",
+			OrgSlug:        "mock-org",
+			OrgName:        "Mock Org",
+			OrganizationID: "00000000-0000-4000-8000-000000000001",
 		},
 		statesByTeam: make(map[string][]LinearWorkflowState),
 		labelsByTeam: make(map[string][]LinearLabel),

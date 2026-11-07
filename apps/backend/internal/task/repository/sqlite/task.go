@@ -3117,6 +3117,9 @@ func (r *Repository) DetachTask(ctx context.Context, taskID string) (bool, error
 	if parentID == "" {
 		return false, tx.Commit()
 	}
+	if err := hierarchy.DenyLinearWatch(ctx, taskID, (taskHierarchyReader{r, tx.Tx}).GetTask); err != nil {
+		return false, err
+	}
 	lockedTaskIDs := []string{parentID, taskID}
 	sort.Strings(lockedTaskIDs)
 	for _, lockedTaskID := range lockedTaskIDs {
@@ -4176,6 +4179,9 @@ func (r *Repository) ReparentDirectChildren(ctx context.Context, oldParentID, ne
 	if err := r.lockTaskHierarchy(ctx, tx, nil, []string{oldParentID, newParentID}); err != nil {
 		return err
 	}
+	if err := hierarchy.DenyLinearWatch(ctx, oldParentID, (taskHierarchyReader{r, tx}).GetTask); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, r.db.Rebind(`
 		UPDATE tasks SET parent_id = ?, updated_at = ?
 		WHERE parent_id = ?
@@ -4204,6 +4210,9 @@ func (r *Repository) ReparentDirectChildrenInWorkspace(
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := r.lockTaskHierarchy(ctx, tx, nil, []string{oldParentID, newParentID}); err != nil {
+		return err
+	}
+	if err := hierarchy.DenyLinearWatch(ctx, oldParentID, (taskHierarchyReader{r, tx}).GetTask); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, r.db.Rebind(`

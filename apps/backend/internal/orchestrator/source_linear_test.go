@@ -50,15 +50,17 @@ func sampleLinearEvent() *linear.NewLinearIssueEvent {
 		ExecutorProfileID: "exec-1",
 		Prompt:            "Work on {{issue.identifier}}: {{issue.title}}",
 		Issue: &linear.LinearIssue{
-			Identifier:    "ENG-1",
-			Title:         "Bug",
-			URL:           "https://linear.app/x/issue/ENG-1",
-			StateName:     "Todo",
-			AssigneeName:  "Alice",
-			CreatorName:   "Bob",
-			Description:   "details",
-			PriorityLabel: "High",
-			TeamKey:       "ENG",
+			ID:             "00000000-0000-4000-8000-000000000002",
+			OrganizationID: "00000000-0000-4000-8000-000000000001",
+			Identifier:     "ENG-1",
+			Title:          "Bug",
+			URL:            "https://linear.app/x/issue/ENG-1",
+			StateName:      "Todo",
+			AssigneeName:   "Alice",
+			CreatorName:    "Bob",
+			Description:    "details",
+			PriorityLabel:  "High",
+			TeamKey:        "ENG",
 		},
 	}
 }
@@ -82,13 +84,11 @@ func TestLinearSource_Reserve_Passthrough(t *testing.T) {
 	}
 }
 
-func TestLinearSource_Reserve_NilServiceFailOpen(t *testing.T) {
-	// Matches today's reserveLinearIssue: when service is unset (boot order
-	// corner case) the pipeline proceeds — better to risk a dup than drop.
+func TestLinearSource_Reserve_NilServiceFailsClosed(t *testing.T) {
 	src := &LinearWatcherSource{service: nil}
 	ok, err := src.Reserve(context.Background(), sampleLinearEvent())
-	if err != nil || !ok {
-		t.Fatalf("expected nil service to fail open, got ok=%v err=%v", ok, err)
+	if err == nil || ok {
+		t.Fatalf("expected nil service to fail closed, got ok=%v err=%v", ok, err)
 	}
 }
 
@@ -109,6 +109,9 @@ func TestLinearSource_BuildTaskRequest(t *testing.T) {
 	req, err := src.BuildTaskRequest(sampleLinearEvent())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ExternalID != "linear-watch:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002" {
+		t.Fatalf("unexpected stable identity: %q", req.ExternalID)
 	}
 	if req.Title != "[ENG-1] Bug" {
 		t.Errorf("title = %q", req.Title)
@@ -171,24 +174,12 @@ func TestLinearSource_AttachTaskID(t *testing.T) {
 	}
 }
 
-func TestLinearSource_Release(t *testing.T) {
+func TestLinearSource_ReleasePreservesReservation(t *testing.T) {
 	svc := &fakeLinearService{}
 	src := &LinearWatcherSource{service: svc}
 	src.Release(context.Background(), sampleLinearEvent())
-	if len(svc.gotRelease) != 1 || svc.gotRelease[0] != "watch-1:ENG-1" {
+	if len(svc.gotRelease) != 0 {
 		t.Fatalf("unexpected release args: %v", svc.gotRelease)
-	}
-}
-
-func TestLinearSource_Release_ErrorIsLoggedNotPropagated(t *testing.T) {
-	svc := &fakeLinearService{releaseErr: errors.New("dedup store down")}
-	src := &LinearWatcherSource{service: svc, logger: nopLogger(t)}
-	// Release returns no value: failure must be swallowed and logged.
-	// We only assert it does not panic and that the underlying service
-	// was still asked to release.
-	src.Release(context.Background(), sampleLinearEvent())
-	if len(svc.gotRelease) != 1 {
-		t.Fatalf("expected release call to be attempted, got %d", len(svc.gotRelease))
 	}
 }
 

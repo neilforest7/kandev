@@ -134,6 +134,9 @@ func (m *Manager) WritePassthroughStdin(ctx context.Context, sessionID string, d
 	if err := execution.validateBuiltinIntent(ctx); err != nil {
 		return err
 	}
+	if err := m.admitTerminalInput(ctx, sessionID, execution); err != nil {
+		return err
+	}
 	if execution.PassthroughProcessID == "" {
 		return fmt.Errorf("session %s is not in passthrough mode", sessionID)
 	}
@@ -150,6 +153,30 @@ func (m *Manager) WritePassthroughStdin(ctx context.Context, sessionID string, d
 	}
 
 	return nil
+}
+
+func (m *Manager) admitTerminalInput(ctx context.Context, sessionID string, execution *AgentExecution) error {
+	if m.executorAdmission == nil {
+		return nil
+	}
+	var metadata map[string]interface{}
+	if execution != nil {
+		metadata = execution.MetadataSnapshot()
+	}
+	_, err := m.executorAdmission(ctx, sessionID, getMetadataString(metadata, "executor_id"), getMetadataString(metadata, MetadataKeyExecutorProfileID))
+	return err
+}
+
+// AdmitTerminalInput applies the same admission to direct PTY input.
+func (m *Manager) AdmitTerminalInput(ctx context.Context, sessionID string) error {
+	if m.executorAdmission == nil {
+		return nil
+	}
+	var execution *AgentExecution
+	if m.executionStore != nil {
+		execution, _ = m.executionStore.GetBySessionID(sessionID)
+	}
+	return m.admitTerminalInput(ctx, sessionID, execution)
 }
 
 // IsPassthroughSession checks if the given session is running in passthrough (PTY) mode.

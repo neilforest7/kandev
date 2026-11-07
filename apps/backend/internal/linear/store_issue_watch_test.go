@@ -231,8 +231,8 @@ func TestStore_IssueWatchTask_ReserveDedup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second reserve: %v", err)
 	}
-	if second {
-		t.Error("expected second reservation to lose due to UNIQUE constraint")
+	if !second {
+		t.Error("expected pending reservation to be retried")
 	}
 
 	seen, err := store.ListSeenIssueIdentifiers(ctx, w.ID)

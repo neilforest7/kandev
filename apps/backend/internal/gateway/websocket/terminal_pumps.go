@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"sync"
@@ -207,6 +208,10 @@ func (h *TerminalHandler) handleTerminalInput(
 	ptyWriter *io.Writer,
 	directOutputSet bool,
 ) (string, bool) {
+	if err := h.lifecycleMgr.AdmitTerminalInput(context.Background(), sessionID); err != nil {
+		h.logger.Debug("terminal input denied", zap.String("session_id", sessionID), zap.Error(err))
+		return processID, directOutputSet
+	}
 	if *ptyWriter != nil {
 		return h.writeToReadyPty(data, sessionID, processID, interactiveRunner, wsw, ptyWriter, directOutputSet)
 	}
@@ -513,6 +518,10 @@ func (h *TerminalHandler) handleUserShellInput(
 	ptyWriter *io.Writer,
 	directOutputSet bool,
 ) bool {
+	if err := h.lifecycleMgr.AdmitTerminalInput(context.Background(), sessionID); err != nil {
+		h.logger.Debug("terminal input denied", zap.String("session_id", sessionID), zap.Error(err))
+		return directOutputSet
+	}
 	if *ptyWriter != nil {
 		return h.writeToReadyUserShellPty(data, sessionID, scopeID, terminalID, processID, interactiveRunner, wsw, ptyWriter, directOutputSet)
 	}

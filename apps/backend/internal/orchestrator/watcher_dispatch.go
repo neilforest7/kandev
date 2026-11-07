@@ -405,6 +405,9 @@ func (c *WatcherDispatchCoordinator) Dispatch(ctx context.Context, src WatcherSo
 	c.logger.Info("watcher dispatch: created issue task",
 		zap.String("source", src.Name()),
 		zap.String("task_id", task.ID))
+	if guard, ok := src.(interface{ SuppressWatcherAutoStart() bool }); ok && guard.SuppressWatcherAutoStart() {
+		return
+	}
 
 	stepID := task.WorkflowStepID
 	if stepID == "" {

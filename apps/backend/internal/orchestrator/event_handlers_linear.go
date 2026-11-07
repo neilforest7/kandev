@@ -59,8 +59,7 @@ func (s *Service) handleNewLinearIssue(ctx context.Context, event *bus.Event) er
 	}
 	src := s.linearSource
 	if src == nil {
-		// SetLinearService was never called; fall back to a fail-open
-		// source so behaviour matches the pre-cache code path.
+		// The source rejects dispatch when the Linear service is unavailable.
 		src = NewLinearWatcherSource(nil, s.logger)
 	}
 	s.dispatchOwnedWatcherEvent(ctx, src, evt, evt.CreatedByUserID,

@@ -410,6 +410,21 @@ func TestHandleTerminalInputRoutesByPtyReadiness(t *testing.T) {
 	}
 }
 
+func TestHandleTerminalInputHonorsExecutorAdmission(t *testing.T) {
+	log, _ := observedTerminalLogger(t)
+	handler, manager := newBridgeTestHandler(t, log)
+	manager.SetExecutorAdmission(func(ctx context.Context, _, _, _ string) (context.Context, error) {
+		return ctx, errors.New("approval required")
+	})
+	pty := &bytes.Buffer{}
+	var writer io.Writer = pty
+	handler.handleTerminalInput([]byte("write"), "session-1", "proc-1", nil, nil, &writer, true)
+	handler.handleUserShellInput([]byte("write"), "session-1", "env-1", "term-1", "proc-1", nil, nil, &writer, true)
+	if pty.Len() != 0 {
+		t.Fatalf("denied terminal wrote %q", pty.String())
+	}
+}
+
 func TestUserShellInputRoutesByPtyReadiness(t *testing.T) {
 	log, recorded := observedTerminalLogger(t)
 	handler, _ := newBridgeTestHandler(t, log)

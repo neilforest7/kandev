@@ -96,6 +96,9 @@ func TestPoller_CheckIssueWatches_PublishesNewIssuesOnly(t *testing.T) {
 		if _, err := f.store.ReserveIssueWatchTask(ctx, w.ID, id, "https://linear.app/x/issue/"+id); err != nil {
 			t.Fatalf("reserve %s: %v", id, err)
 		}
+		if err := f.store.AssignIssueWatchTaskID(ctx, w.ID, id, "task-"+id); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Second tick: nothing new, no additional events should publish.

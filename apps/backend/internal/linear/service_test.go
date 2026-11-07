@@ -73,7 +73,7 @@ func (c *fakeClient) TestAuth(_ context.Context) (*TestConnectionResult, error) 
 	if c.testAuthFn != nil {
 		return c.testAuthFn()
 	}
-	return &TestConnectionResult{OK: true}, nil
+	return &TestConnectionResult{OK: true, OrganizationID: "00000000-0000-4000-8000-000000000001"}, nil
 }
 
 func (c *fakeClient) GetIssue(_ context.Context, id string) (*LinearIssue, error) {

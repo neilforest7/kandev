@@ -54,6 +54,7 @@ func createSearchTestSchema(t *testing.T, repo *sqlite.Repository) {
 			project_id TEXT DEFAULT '',
 			labels TEXT DEFAULT '[]',
 			identifier TEXT DEFAULT '',
+			external_id TEXT DEFAULT '',
 			is_ephemeral INTEGER DEFAULT 0,
 			origin TEXT DEFAULT 'manual',
 			metadata TEXT DEFAULT '{}',

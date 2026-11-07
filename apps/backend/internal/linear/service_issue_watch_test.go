@@ -492,6 +492,9 @@ func TestService_CheckIssueWatch_FiltersAlreadySeen(t *testing.T) {
 	if _, err := f.store.ReserveIssueWatchTask(ctx, w.ID, "ENG-2", "https://linear.app/x/issue/ENG-2"); err != nil {
 		t.Fatalf("seed reservation: %v", err)
 	}
+	if err := f.store.AssignIssueWatchTaskID(ctx, w.ID, "ENG-2", "task-2"); err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := f.svc.CheckIssueWatch(ctx, w)
 	if err != nil {

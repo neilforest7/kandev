@@ -48,13 +48,14 @@ type SetConfigRequest struct {
 // TestConnectionResult reports what the backend learned when pinging Linear
 // with the supplied credentials.
 type TestConnectionResult struct {
-	OK          bool   `json:"ok"`
-	UserID      string `json:"userId,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
-	Email       string `json:"email,omitempty"`
-	OrgSlug     string `json:"orgSlug,omitempty"`
-	OrgName     string `json:"orgName,omitempty"`
-	Error       string `json:"error,omitempty"`
+	OK             bool   `json:"ok"`
+	UserID         string `json:"userId,omitempty"`
+	DisplayName    string `json:"displayName,omitempty"`
+	Email          string `json:"email,omitempty"`
+	OrgSlug        string `json:"orgSlug,omitempty"`
+	OrgName        string `json:"orgName,omitempty"`
+	OrganizationID string `json:"organizationId,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // LinearIssue is the subset of Linear's issue payload that Kandev consumes.
@@ -62,10 +63,12 @@ type TestConnectionResult struct {
 // current state, and surface a few familiar fields (assignee, priority, team)
 // in the popover.
 type LinearIssue struct {
-	ID          string `json:"id"`
-	Identifier  string `json:"identifier"` // e.g. "ENG-123"
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	ID              string `json:"id"`
+	OrganizationID  string `json:"organizationId,omitempty"`
+	RecoveryPending bool   `json:"recoveryPending,omitempty"`
+	Identifier      string `json:"identifier"` // e.g. "ENG-123"
+	Title           string `json:"title"`
+	Description     string `json:"description"`
 	// State mirrors Jira's status tuple (id, name, category) so frontend code
 	// styling status pills can branch on Category without per-integration
 	// switches. Linear's StateType values map onto: backlog/unstarted → "new",

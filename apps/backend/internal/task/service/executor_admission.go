@@ -43,6 +43,11 @@ func (s *Service) PrepareExecutorAdmission(ctx context.Context, sessionID, execu
 	if err != nil {
 		return ctx, err
 	}
+	if session != nil {
+		if err := denyUnapprovedLinearWatch(ctx, session.TaskID, s.tasks.GetTask); err != nil {
+			return ctx, err
+		}
+	}
 	executorID, profileID, err = s.executorAdmissionTargets(ctx, session, executorID, profileID)
 	if err != nil {
 		return ctx, err

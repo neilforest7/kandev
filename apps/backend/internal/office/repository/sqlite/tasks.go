@@ -14,6 +14,7 @@ import (
 	internaldb "github.com/kandev/kandev/internal/db"
 	"github.com/kandev/kandev/internal/db/dialect"
 	taskmodels "github.com/kandev/kandev/internal/task/models"
+	"github.com/kandev/kandev/internal/task/repository/hierarchy"
 	taskrepo "github.com/kandev/kandev/internal/task/repository/sqlite"
 )
 
@@ -954,6 +955,9 @@ func (r *Repository) UpdateTaskParentID(ctx context.Context, taskID, parentID st
 			}
 			return err
 		}
+	}
+	if err := hierarchy.DenyLinearWatchSQL(ctx, tx.Tx, r.db.Rebind, taskID); err != nil {
+		return err
 	}
 	query := taskParentUpdateQuery(r.db.DriverName())
 	args := []interface{}{parentID, parentID, taskID}

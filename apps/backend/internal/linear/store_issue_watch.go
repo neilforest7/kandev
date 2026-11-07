@@ -270,9 +270,7 @@ func (s *Store) DeleteIssueWatch(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-// ReserveIssueWatchTask atomically claims a slot for a (watch, issue) pair via
-// INSERT OR IGNORE. Returns true when this caller won the race and should
-// proceed to create the task.
+// ReserveIssueWatchTask keeps incomplete reservations eligible for idempotent retry.
 func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID, identifier, issueURL string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, s.db.Rebind(`
 		INSERT INTO linear_issue_watch_tasks (id, issue_watch_id, issue_identifier, issue_url, task_id, created_at)
@@ -286,16 +284,27 @@ func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID, identifier, 
 	if err != nil {
 		return false, err
 	}
-	return rows == 1, nil
+	if rows == 1 {
+		return true, nil
+	}
+	var taskID string
+	err = s.db.GetContext(ctx, &taskID, s.db.Rebind(`SELECT task_id FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND issue_identifier = ?`), watchID, identifier)
+	if err != nil {
+		return false, err
+	}
+	return taskID == "", nil
 }
 
 // AssignIssueWatchTaskID stamps the created task ID onto a previously-reserved
 // dedup row.
 func (s *Store) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("assign task ID: task ID is required")
+	}
 	res, err := s.db.ExecContext(ctx, s.db.Rebind(`
 		UPDATE linear_issue_watch_tasks SET task_id = ?
-		WHERE issue_watch_id = ? AND issue_identifier = ?`),
-		taskID, watchID, identifier)
+		WHERE issue_watch_id = ? AND issue_identifier = ? AND (task_id = '' OR task_id = ?)`),
+		taskID, watchID, identifier, taskID)
 	if err != nil {
 		return err
 	}
@@ -304,7 +313,7 @@ func (s *Store) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier,
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("assign task ID: reservation row not found for watch=%s issue=%s", watchID, identifier)
+		return fmt.Errorf("assign task ID: reservation missing or already attached for watch=%s issue=%s", watchID, identifier)
 	}
 	return nil
 }
@@ -332,6 +341,19 @@ func (s *Store) ListSeenIssueIdentifiers(ctx context.Context, watchID string) (m
 		out[k] = struct{}{}
 	}
 	return out, nil
+}
+
+func (s *Store) ListAttachedIssueIdentifiers(ctx context.Context, watchID string) (map[string]struct{}, error) {
+	var keys []string
+	err := s.ro.SelectContext(ctx, &keys, s.ro.Rebind(`SELECT issue_identifier FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND task_id <> ''`), watchID)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		seen[key] = struct{}{}
+	}
+	return seen, nil
 }
 
 // ListIssueWatchTaskIDs returns every task_id recorded against a watch,

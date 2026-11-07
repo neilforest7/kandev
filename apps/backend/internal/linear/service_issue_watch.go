@@ -242,12 +242,8 @@ func (s *Service) ResetIssueWatch(ctx context.Context, watchID string) (int, err
 // Concurrency note: callers must tolerate being handed an issue that gets
 // stolen by a concurrent reserver. We query the seen-set and return unseen
 // identifiers, but we do NOT insert the dedup row here — that happens in the
-// orchestrator's ReserveIssueWatchTask via INSERT OR IGNORE. If the manual
-// /trigger endpoint and the poller tick fire for the same watch in quick
-// succession, both calls can see the same identifier as unseen before either
-// has reserved it. The duplicate publish is harmless (the second reserver
-// loses the race and bails) but the goroutine work is wasted. Same pattern as
-// the JIRA watcher.
+// orchestrator's stable task identity. Concurrent or interrupted dispatches
+// may retry an incomplete reservation without creating another task.
 func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*LinearIssue, error) {
 	var admissionErr error
 	ctx, admissionErr = s.executorActorContext(ctx, w.CreatedByUserID, w.ExecutorProfileID, w.WorkspaceID)
@@ -260,11 +256,22 @@ func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*Linear
 	if err != nil {
 		return nil, err
 	}
-	seen, err := s.store.ListSeenIssueIdentifiers(ctx, w.ID)
+	identity, err := client.TestAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if identity == nil || !identity.OK || identity.OrganizationID == "" {
+		return nil, fmt.Errorf("linear: organization identity unavailable")
+	}
+	seen, err := s.store.ListAttachedIssueIdentifiers(ctx, w.ID)
 	if err != nil {
 		s.log.Warn("linear: dedup set fetch failed",
 			zap.String("watch_id", w.ID), zap.Error(err))
 		seen = nil
+	}
+	reserved, err := s.store.ListSeenIssueIdentifiers(ctx, w.ID)
+	if err != nil {
+		return nil, err
 	}
 	// Page through matches (bounded by maxPages) so the sort below ranks the
 	// whole unseen backlog. Linear only orders by created/updated, so priority
@@ -299,6 +306,8 @@ func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*Linear
 		}
 		for i := range res.Issues {
 			issue := res.Issues[i]
+			issue.OrganizationID = identity.OrganizationID
+			_, issue.RecoveryPending = reserved[issue.Identifier]
 			if _, ok := seen[issue.Identifier]; ok {
 				continue
 			}
