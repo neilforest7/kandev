@@ -23,7 +23,7 @@ func refuseReservedMetadata(metadata map[string]interface{}, allowed bool) error
 		return nil
 	}
 	for key := range metadata {
-		if strings.HasPrefix(key, ReservedMetadataKeyPrefixCoordinator) || key == models.MetaKeyLastTurnError {
+		if strings.HasPrefix(key, ReservedMetadataKeyPrefixCoordinator) || key == models.MetaKeyLastTurnError || key == models.MetaKeyLinearWatchCreationComplete {
 			return fmt.Errorf("%w: %s", ErrReservedMetadata, key)
 		}
 	}

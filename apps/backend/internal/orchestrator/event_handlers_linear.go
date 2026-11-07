@@ -17,9 +17,8 @@ import (
 // LinearService is the subset of linear.Service the orchestrator needs to
 // deduplicate issue→task mappings. Mirrors the JIRA equivalent.
 type LinearService interface {
-	ReserveIssueWatchTask(ctx context.Context, watchID, identifier, issueURL string) (bool, error)
-	AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, taskID string) error
-	ReleaseIssueWatchTask(ctx context.Context, watchID, identifier string) error
+	ReserveIssueWatchTask(ctx context.Context, watchID string, issue *linear.LinearIssue) (bool, error)
+	AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, reservationID, taskID string) error
 	// DisableIssueWatchWithError is invoked by the dispatch coordinator's
 	// self-heal flow when the watcher's bound agent profile has been
 	// soft-deleted.

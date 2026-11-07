@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kandev/kandev/internal/common/logger"
 )
 
@@ -107,7 +108,15 @@ func (c *fakeClient) ListTeams(_ context.Context) ([]LinearTeam, error) {
 
 func (c *fakeClient) SearchIssues(_ context.Context, filter SearchFilter, pageToken string, max int) (*SearchResult, error) {
 	if c.searchIssuesFn != nil {
-		return c.searchIssuesFn(filter, pageToken, max)
+		result, err := c.searchIssuesFn(filter, pageToken, max)
+		if result != nil {
+			for i := range result.Issues {
+				if result.Issues[i].ID == "" {
+					result.Issues[i].ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(result.Issues[i].Identifier)).String()
+				}
+			}
+		}
+		return result, err
 	}
 	return &SearchResult{}, nil
 }

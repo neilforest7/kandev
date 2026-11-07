@@ -9,24 +9,30 @@ import (
 )
 
 type fakeLinearService struct {
-	reserveOK  bool
-	reserveErr error
-	assignErr  error
-	releaseErr error
-	disableErr error
-	gotReserve []string
-	gotAssign  []string
-	gotRelease []string
-	gotDisable []string
+	reserveOK         bool
+	reserveErr        error
+	assignErr         error
+	releaseErr        error
+	disableErr        error
+	reserveID         string
+	gotReserve        []string
+	gotAssign         []string
+	gotReservationIDs []string
+	gotRelease        []string
+	gotDisable        []string
 }
 
-func (f *fakeLinearService) ReserveIssueWatchTask(_ context.Context, watchID, id, _ string) (bool, error) {
-	f.gotReserve = append(f.gotReserve, watchID+":"+id)
+func (f *fakeLinearService) ReserveIssueWatchTask(_ context.Context, watchID string, issue *linear.LinearIssue) (bool, error) {
+	f.gotReserve = append(f.gotReserve, watchID+":"+issue.Identifier)
+	if f.reserveID != "" {
+		issue.ReservationID = f.reserveID
+	}
 	return f.reserveOK, f.reserveErr
 }
 
-func (f *fakeLinearService) AssignIssueWatchTaskID(_ context.Context, watchID, id, taskID string) error {
+func (f *fakeLinearService) AssignIssueWatchTaskID(_ context.Context, watchID, id, reservationID string, taskID string) error {
 	f.gotAssign = append(f.gotAssign, watchID+":"+id+":"+taskID)
+	f.gotReservationIDs = append(f.gotReservationIDs, reservationID)
 	return f.assignErr
 }
 
@@ -163,6 +169,28 @@ func TestLinearSource_BuildTaskRequest_WrongType(t *testing.T) {
 	}
 }
 
+func TestLinearSource_RecoveryPreservesSourceAssociation(t *testing.T) {
+	event := sampleLinearEvent()
+	event.Issue.Identifier, event.Issue.URL = "NEW-9", "https://linear.app/x/issue/NEW-9"
+	event.Issue.RecoveryPending = true
+	event.Issue.ReservationIdentifier, event.Issue.ReservationURL = "ENG-1", "https://linear.app/x/issue/ENG-1"
+	svc := &fakeLinearService{}
+	source := &LinearWatcherSource{service: svc}
+	request, err := source.BuildTaskRequest(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Metadata["linear_issue_identifier"] != "ENG-1" || request.Metadata["linear_issue_url"] != event.Issue.ReservationURL {
+		t.Fatalf("source metadata = %+v", request.Metadata)
+	}
+	if err := source.AttachTaskID(context.Background(), event, "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(svc.gotAssign) != 1 || svc.gotAssign[0] != "watch-1:ENG-1:task-1" {
+		t.Fatalf("reservation attachment = %v", svc.gotAssign)
+	}
+}
+
 func TestLinearSource_AttachTaskID(t *testing.T) {
 	svc := &fakeLinearService{}
 	src := &LinearWatcherSource{service: svc}
@@ -171,6 +199,21 @@ func TestLinearSource_AttachTaskID(t *testing.T) {
 	}
 	if len(svc.gotAssign) != 1 || svc.gotAssign[0] != "watch-1:ENG-1:task-9" {
 		t.Fatalf("unexpected assign args: %v", svc.gotAssign)
+	}
+}
+
+func TestLinearSourceCarriesReservationGenerationToAttach(t *testing.T) {
+	svc := &fakeLinearService{reserveOK: true, reserveID: "generation"}
+	source := &LinearWatcherSource{service: svc}
+	event := sampleLinearEvent()
+	if ok, err := source.Reserve(context.Background(), event); err != nil || !ok {
+		t.Fatalf("reserve: %v, %v", ok, err)
+	}
+	if err := source.AttachTaskID(context.Background(), event, "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(svc.gotReservationIDs) != 1 || svc.gotReservationIDs[0] != "generation" {
+		t.Fatalf("attachment generation = %v", svc.gotReservationIDs)
 	}
 }
 

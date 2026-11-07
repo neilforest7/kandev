@@ -933,9 +933,6 @@ func (a *issueTaskCreatorAdapter) CreateIssueTask(ctx context.Context, req *orch
 		return nil, err
 	}
 	if req.ExternalID != "" {
-		if result.Outcome == taskservice.CreateTaskOutcomeFoundUnsettled {
-			return nil, fmt.Errorf("issue task creation is unsettled")
-		}
 		for _, key := range []string{"linear_issue_watch_id", "linear_issue_identifier", "linear_issue_url"} {
 			got, ok := result.Task.Metadata[key].(string)
 			want, valid := req.Metadata[key].(string)
@@ -944,13 +941,12 @@ func (a *issueTaskCreatorAdapter) CreateIssueTask(ctx context.Context, req *orch
 			}
 		}
 		if result.Outcome == taskservice.CreateTaskOutcomeCreated {
-			settled, _, err := a.svc.SettleExternalID(ctx, result.Task.ID, req.ExternalID)
-			if err != nil {
+			if err := a.svc.MarkLinearWatchCreationComplete(ctx, result.Task.ID, req.ExternalID); err != nil {
 				return nil, err
 			}
-			if !settled {
-				return nil, fmt.Errorf("issue task identity was lost")
-			}
+		}
+		if err := a.svc.SettleLinearWatchCreation(ctx, result.Task.ID, req.ExternalID); err != nil {
+			return nil, err
 		}
 	}
 	return result.Task, nil
@@ -984,16 +980,12 @@ type linearServiceAdapter struct {
 	svc *linearpkg.Service
 }
 
-func (a *linearServiceAdapter) ReserveIssueWatchTask(ctx context.Context, watchID, identifier, issueURL string) (bool, error) {
-	return a.svc.Store().ReserveIssueWatchTask(ctx, watchID, identifier, issueURL)
+func (a *linearServiceAdapter) ReserveIssueWatchTask(ctx context.Context, watchID string, issue *linearpkg.LinearIssue) (bool, error) {
+	return a.svc.Store().ReserveIssueWatchTask(ctx, watchID, issue)
 }
 
-func (a *linearServiceAdapter) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, taskID string) error {
-	return a.svc.Store().AssignIssueWatchTaskID(ctx, watchID, identifier, taskID)
-}
-
-func (a *linearServiceAdapter) ReleaseIssueWatchTask(ctx context.Context, watchID, identifier string) error {
-	return a.svc.Store().ReleaseIssueWatchTask(ctx, watchID, identifier)
+func (a *linearServiceAdapter) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, reservationID, taskID string) error {
+	return a.svc.Store().AssignIssueWatchTaskID(ctx, watchID, identifier, reservationID, taskID)
 }
 
 // sentryServiceAdapter exposes the Sentry service's issue-watch dedup methods

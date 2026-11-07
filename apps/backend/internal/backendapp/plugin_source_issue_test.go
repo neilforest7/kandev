@@ -70,6 +70,7 @@ type pluginLinearSourceFake struct {
 	commentID   string
 	commentArgs []string
 	states      []string
+	lastLookup  string
 }
 
 func (f *pluginLinearSourceFake) GetTaskIssueLink(context.Context, string) (*linear.TaskIssueLink, error) {
@@ -83,12 +84,29 @@ func (f *pluginLinearSourceFake) GetTaskIssueLink(context.Context, string) (*lin
 	return &copy, nil
 }
 
-func (f *pluginLinearSourceFake) GetIssueForWorkspace(context.Context, string, string) (*linear.LinearIssue, error) {
+func (f *pluginLinearSourceFake) GetIssueForWorkspace(_ context.Context, _, id string) (*linear.LinearIssue, error) {
+	f.lastLookup = id
 	if f.issueErr != nil {
 		return nil, f.issueErr
 	}
 	copy := *f.issue
 	return &copy, nil
+}
+
+func TestPluginLinearSourceWritebackUsesStableIssueIDAfterRename(t *testing.T) {
+	ctx := context.Background()
+	task := &taskmodels.Task{ID: "task", WorkspaceID: "workspace", Metadata: map[string]interface{}{
+		"linear_issue_identifier": "ENG-1", "linear_issue_url": "https://linear.app/x/issue/ENG-1",
+	}}
+	source := &pluginLinearSourceFake{
+		link:  &linear.TaskIssueLink{WorkspaceID: "workspace", IssueID: "issue-id", IssueIdentifier: "ENG-1", IssueURL: "https://linear.app/x/issue/ENG-1"},
+		issue: &linear.LinearIssue{ID: "issue-id", Identifier: "NEW-9", URL: "https://linear.app/x/issue/NEW-9"},
+	}
+	controller := pluginSourceIssueController{tasks: pluginTaskReaderFake{task}, linear: source}
+	result, err := controller.GetCapabilities(ctx, "workspace", "task")
+	if err != nil || source.lastLookup != "issue-id" || result.SourceID != "issue-id" || result.Identifier != "NEW-9" || result.URL != source.issue.URL {
+		t.Fatalf("capabilities = %+v lookup=%q error=%v", result, source.lastLookup, err)
+	}
 }
 
 func (f *pluginLinearSourceFake) AddCommentForWorkspace(_ context.Context, _, issueID, body string) (string, error) {

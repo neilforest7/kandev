@@ -6,11 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kandev/kandev/internal/db/dialect"
 	executoridentity "github.com/kandev/kandev/internal/executors/identity"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func WatchIssueIdentity(organizationID, issueID string) (string, error) {
+	org, err := uuid.Parse(organizationID)
+	if err != nil || org == uuid.Nil {
+		return "", errors.New("linear: invalid organization ID")
+	}
+	issue, err := uuid.Parse(issueID)
+	if err != nil || issue == uuid.Nil {
+		return "", errors.New("linear: invalid issue ID")
+	}
+	return "linear:" + org.String() + ":" + issue.String(), nil
+}
 
 // issueWatchRow mirrors IssueWatch but stores the filter as a raw JSON string
 // the way SQLite holds it. The store marshals/unmarshals at this boundary so
@@ -271,40 +284,84 @@ func (s *Store) DeleteIssueWatch(ctx context.Context, id string) error {
 }
 
 // ReserveIssueWatchTask keeps incomplete reservations eligible for idempotent retry.
-func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID, identifier, issueURL string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, s.db.Rebind(`
-		INSERT INTO linear_issue_watch_tasks (id, issue_watch_id, issue_identifier, issue_url, task_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(issue_watch_id, issue_identifier) DO NOTHING`),
-		uuid.New().String(), watchID, identifier, issueURL, "", time.Now().UTC())
+func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID string, issue *LinearIssue) (bool, error) {
+	if issue == nil || watchID == "" || issue.Identifier == "" || issue.URL == "" {
+		return false, errors.New("linear: incomplete issue reservation")
+	}
+	if (issue.RecoveryPending && (issue.ReservationIdentifier == "" || issue.ReservationURL == "" || issue.ReservationID == "")) ||
+		(!issue.RecoveryPending && (issue.ReservationIdentifier != "" || issue.ReservationURL != "")) {
+		return false, errors.New("linear: incomplete recovery identity")
+	}
+	identity, err := WatchIssueIdentity(issue.OrganizationID, issue.ID)
 	if err != nil {
 		return false, err
 	}
-	rows, err := res.RowsAffected()
+	identifier, issueURL := issue.Identifier, issue.URL
+	if issue.ReservationIdentifier != "" {
+		identifier, issueURL = issue.ReservationIdentifier, issue.ReservationURL
+	}
+	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	if rows == 1 {
-		return true, nil
+	defer func() { _ = tx.Rollback() }()
+	if dialect.IsPostgres(s.db.DriverName()) {
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`), "linear-watch:"+watchID+":"+identity); err != nil {
+			return false, err
+		}
 	}
-	var taskID string
-	err = s.db.GetContext(ctx, &taskID, s.db.Rebind(`SELECT task_id FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND issue_identifier = ?`), watchID, identifier)
-	if err != nil {
+	query := `SELECT id, issue_watch_id, issue_identifier, issue_url, task_id, created_at FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND id LIKE ?`
+	if dialect.IsPostgres(s.db.DriverName()) {
+		query += ` FOR UPDATE`
+	}
+	var rows []IssueWatchTask
+	if err := tx.SelectContext(ctx, &rows, s.db.Rebind(query), watchID, identity+":%"); err != nil {
 		return false, err
 	}
-	return taskID == "", nil
+	if len(rows) > 1 {
+		return false, errors.New("linear: multiple reservations have the same issue identity")
+	}
+	if len(rows) == 0 {
+		if issue.RecoveryPending {
+			return false, errors.New("linear: recovery reservation no longer exists")
+		}
+		generation := uuid.NewString()
+		for generation == watchID {
+			generation = uuid.NewString()
+		}
+		row := IssueWatchTask{ID: identity + ":" + generation, IssueWatchID: watchID, IssueIdentifier: identifier, IssueURL: issueURL}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO linear_issue_watch_tasks (id, issue_watch_id, issue_identifier, issue_url, task_id, created_at) VALUES (?, ?, ?, ?, '', ?)`), row.ID, watchID, identifier, issueURL, time.Now().UTC()); err != nil {
+			return false, fmt.Errorf("linear: reserve issue identity: %w", err)
+		}
+		rows = append(rows, row)
+	}
+	row := rows[0]
+	if row.IssueIdentifier != identifier || row.IssueURL != issueURL || (issue.RecoveryPending && row.ID != issue.ReservationID) {
+		return false, errors.New("linear: issue reservation generation or source changed")
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	issue.ReservationID = row.ID
+	return row.TaskID == "", nil
+}
+
+func (s *Store) ListIssueWatchReservations(ctx context.Context, watchID string) ([]IssueWatchTask, error) {
+	var rows []IssueWatchTask
+	err := s.ro.SelectContext(ctx, &rows, s.ro.Rebind(`SELECT id, issue_watch_id, issue_identifier, issue_url, task_id, created_at FROM linear_issue_watch_tasks WHERE issue_watch_id = ? ORDER BY created_at, id`), watchID)
+	return rows, err
 }
 
 // AssignIssueWatchTaskID stamps the created task ID onto a previously-reserved
 // dedup row.
-func (s *Store) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, taskID string) error {
-	if taskID == "" {
-		return fmt.Errorf("assign task ID: task ID is required")
+func (s *Store) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, reservationID, taskID string) error {
+	if taskID == "" || reservationID == "" {
+		return errors.New("assign task ID: reservation and task IDs are required")
 	}
 	res, err := s.db.ExecContext(ctx, s.db.Rebind(`
 		UPDATE linear_issue_watch_tasks SET task_id = ?
-		WHERE issue_watch_id = ? AND issue_identifier = ? AND (task_id = '' OR task_id = ?)`),
-		taskID, watchID, identifier, taskID)
+		WHERE id = ? AND issue_watch_id = ? AND issue_identifier = ? AND (task_id = '' OR task_id = ?)`),
+		taskID, reservationID, watchID, identifier, taskID)
 	if err != nil {
 		return err
 	}
@@ -316,44 +373,6 @@ func (s *Store) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier,
 		return fmt.Errorf("assign task ID: reservation missing or already attached for watch=%s issue=%s", watchID, identifier)
 	}
 	return nil
-}
-
-// ReleaseIssueWatchTask drops a reservation so the next poll can retry. Used
-// when task creation fails after a successful reserve.
-func (s *Store) ReleaseIssueWatchTask(ctx context.Context, watchID, identifier string) error {
-	_, err := s.db.ExecContext(ctx, s.db.Rebind(
-		`DELETE FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND issue_identifier = ?`),
-		watchID, identifier)
-	return err
-}
-
-// ListSeenIssueIdentifiers returns the set of issue identifiers already
-// reserved against a watch.
-func (s *Store) ListSeenIssueIdentifiers(ctx context.Context, watchID string) (map[string]struct{}, error) {
-	var keys []string
-	err := s.ro.SelectContext(ctx, &keys, s.ro.Rebind(
-		`SELECT issue_identifier FROM linear_issue_watch_tasks WHERE issue_watch_id = ?`), watchID)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]struct{}, len(keys))
-	for _, k := range keys {
-		out[k] = struct{}{}
-	}
-	return out, nil
-}
-
-func (s *Store) ListAttachedIssueIdentifiers(ctx context.Context, watchID string) (map[string]struct{}, error) {
-	var keys []string
-	err := s.ro.SelectContext(ctx, &keys, s.ro.Rebind(`SELECT issue_identifier FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND task_id <> ''`), watchID)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		seen[key] = struct{}{}
-	}
-	return seen, nil
 }
 
 // ListIssueWatchTaskIDs returns every task_id recorded against a watch,

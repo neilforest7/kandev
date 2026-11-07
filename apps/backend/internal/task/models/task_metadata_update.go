@@ -12,6 +12,7 @@ const ReservedMetadataKeyPrefixCoordinator = "kandev.coordinator_"
 
 const MetaKeyLinearIssueWatchID = "linear_issue_watch_id"
 const LinearWatchExternalIDPrefix = "linear-watch:"
+const MetaKeyLinearWatchCreationComplete = "linear_watch_creation_complete"
 
 // MetaKeyRequiredSubtaskCount is a trusted routine's minimum number of durable
 // child assignments. It is a creation requirement, not a child-content verdict.
@@ -31,6 +32,7 @@ func ProtectedTaskMetadataUpdate(existing, requested map[string]interface{}) map
 		MetaKeyDeferredLaunch, MetaKeyStepHandoffCarry, MetaKeyHandoffSource, MetaKeyHandoffs,
 		MetaKeyAutomationStartOwned, MetaKeyRequiredSubtaskCount, MetaKeyLastTurnError,
 		MetaKeyLinearIssueWatchID,
+		MetaKeyLinearWatchCreationComplete,
 	} {
 		if value, ok := existing[key]; ok {
 			updated[key] = value

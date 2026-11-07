@@ -13,7 +13,7 @@ func TestWatchReservationRestartAndAssociation(t *testing.T) {
 	if err := store.CreateIssueWatch(ctx, watch); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := store.ReserveIssueWatchTask(ctx, watch.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil || !ok {
+	if ok, err := reserveTestIssueWatchTask(ctx, store, watch.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil || !ok {
 		t.Fatalf("reserve: %v, %v", ok, err)
 	}
 
@@ -22,37 +22,36 @@ func TestWatchReservationRestartAndAssociation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen, err := restarted.ListSeenIssueIdentifiers(ctx, watch.ID)
+	seen, err := restarted.ListIssueWatchReservations(ctx, watch.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := seen["ENG-1"]; !ok {
+	if len(seen) != 1 || seen[0].IssueIdentifier != "ENG-1" {
 		t.Fatal("reservation disappeared on restart")
 	}
-	attached, err := restarted.ListAttachedIssueIdentifiers(ctx, watch.ID)
-	if err != nil || len(attached) != 0 {
-		t.Fatalf("pending reservation must be retried: %v, %v", attached, err)
+	if seen[0].TaskID != "" {
+		t.Fatalf("pending reservation unexpectedly attached: %+v", seen[0])
 	}
-	if ok, err := restarted.ReserveIssueWatchTask(ctx, watch.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil || !ok {
+	if ok, err := reserveTestIssueWatchTask(ctx, restarted, watch.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil || !ok {
 		t.Fatalf("retry reserve: %v, %v", ok, err)
 	}
 	if _, err := restarted.GetTaskIssueLink(ctx, "task-1"); !errors.Is(err, ErrSourceLinkNotFound) {
 		t.Fatalf("unattached task link: %v", err)
 	}
-	if err := restarted.AssignIssueWatchTaskID(ctx, watch.ID, "ENG-1", "task-1"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, restarted, watch.ID, "ENG-1", "task-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.AssignIssueWatchTaskID(ctx, watch.ID, "ENG-1", "task-1"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, restarted, watch.ID, "ENG-1", "task-1"); err != nil {
 		t.Fatalf("repeat attach: %v", err)
 	}
-	if err := restarted.AssignIssueWatchTaskID(ctx, watch.ID, "ENG-1", "task-2"); err == nil {
+	if err := assignTestIssueWatchTaskID(ctx, restarted, watch.ID, "ENG-1", "task-2"); err == nil {
 		t.Fatal("conflicting attach overwrote existing association")
 	}
 	if _, err := restarted.GetTaskIssueLink(ctx, "task-1"); err != nil {
 		t.Fatalf("original host association lost: %v", err)
 	}
-	attached, err = restarted.ListAttachedIssueIdentifiers(ctx, watch.ID)
-	if err != nil || len(attached) != 1 {
+	attached, err := restarted.ListIssueWatchReservations(ctx, watch.ID)
+	if err != nil || len(attached) != 1 || attached[0].TaskID != "task-1" {
 		t.Fatalf("attached reservation must be seen: %v, %v", attached, err)
 	}
 }

@@ -115,6 +115,7 @@ var protectedLiveMetadataKeys = []string{
 	models.MetaKeyHandoffSource,
 	models.MetaKeyLastTurnError,
 	models.MetaKeyLinearIssueWatchID,
+	models.MetaKeyLinearWatchCreationComplete,
 }
 
 // preserveProtectedLiveMetadata overwrites protectedLiveMetadataKeys in

@@ -55,6 +55,10 @@ func TestMockClient_GetIssueRoundtrip(t *testing.T) {
 	if got.Title != "Test issue" {
 		t.Fatalf("unexpected title %q", got.Title)
 	}
+	byID, err := m.GetIssue(context.Background(), got.ID)
+	if err != nil || byID.Identifier != got.Identifier {
+		t.Fatalf("lookup by stable ID = %+v, %v", byID, err)
+	}
 }
 
 func TestMockClient_GetIssueUnknownReturns404(t *testing.T) {

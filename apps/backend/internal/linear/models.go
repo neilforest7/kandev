@@ -63,12 +63,15 @@ type TestConnectionResult struct {
 // current state, and surface a few familiar fields (assignee, priority, team)
 // in the popover.
 type LinearIssue struct {
-	ID              string `json:"id"`
-	OrganizationID  string `json:"organizationId,omitempty"`
-	RecoveryPending bool   `json:"recoveryPending,omitempty"`
-	Identifier      string `json:"identifier"` // e.g. "ENG-123"
-	Title           string `json:"title"`
-	Description     string `json:"description"`
+	ID                    string `json:"id"`
+	OrganizationID        string `json:"organizationId,omitempty"`
+	RecoveryPending       bool   `json:"recoveryPending,omitempty"`
+	ReservationIdentifier string `json:"reservationIdentifier,omitempty"`
+	ReservationURL        string `json:"reservationUrl,omitempty"`
+	ReservationID         string `json:"reservationId,omitempty"`
+	Identifier            string `json:"identifier"` // e.g. "ENG-123"
+	Title                 string `json:"title"`
+	Description           string `json:"description"`
 	// State mirrors Jira's status tuple (id, name, category) so frontend code
 	// styling status pills can branch on Category without per-integration
 	// switches. Linear's StateType values map onto: backlog/unstarted → "new",
@@ -270,11 +273,8 @@ type IssueWatch struct {
 	UpdatedAt   time.Time  `json:"updatedAt" db:"updated_at"`
 }
 
-// IssueWatchTask deduplicates task creation per (watch, issue) tuple. The
-// UNIQUE constraint on (issue_watch_id, issue_identifier) prevents two
-// concurrent pollers from racing to create duplicate tasks for the same
-// issue. We key on Identifier (e.g. "ENG-123") rather than the GraphQL UUID
-// because it's stable, what humans see, and present on every search result.
+// IssueWatchTask records the stable organization, issue and watch identity in ID.
+// The original identifier and URL preserve the Host source association.
 type IssueWatchTask struct {
 	ID              string    `json:"id" db:"id"`
 	IssueWatchID    string    `json:"issueWatchId" db:"issue_watch_id"`

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // MockClient implements Client with in-memory data for E2E tests. Mirrors the
@@ -85,6 +87,14 @@ func (m *MockClient) GetIssue(_ context.Context, identifier string) (*LinearIssu
 		return nil, &err
 	}
 	i, ok := m.issues[identifier]
+	if !ok {
+		for _, candidate := range m.issues {
+			if candidate.ID == identifier {
+				i, ok = candidate, true
+				break
+			}
+		}
+	}
 	if !ok {
 		return nil, &APIError{StatusCode: http.StatusNotFound, Message: "issue not found: " + identifier}
 	}
@@ -244,6 +254,12 @@ func (m *MockClient) AddIssue(issue *LinearIssue) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *issue
+	if cp.ID == "" {
+		cp.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(cp.Identifier)).String()
+	}
+	if cp.URL == "" {
+		cp.URL = "https://linear.app/mock-org/issue/" + cp.Identifier
+	}
 	if _, exists := m.issues[issue.Identifier]; !exists {
 		m.issueOrder = append(m.issueOrder, issue.Identifier)
 	}
@@ -280,12 +296,13 @@ func (m *MockClient) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.authResult = &TestConnectionResult{
-		OK:          true,
-		UserID:      "mock-user",
-		DisplayName: "Mock User",
-		Email:       "mock@example.com",
-		OrgSlug:     "mock-org",
-		OrgName:     "Mock Org",
+		OK:             true,
+		UserID:         "mock-user",
+		DisplayName:    "Mock User",
+		Email:          "mock@example.com",
+		OrgSlug:        "mock-org",
+		OrgName:        "Mock Org",
+		OrganizationID: "00000000-0000-4000-8000-000000000001",
 	}
 	m.teams = nil
 	m.statesByTeam = make(map[string][]LinearWorkflowState)

@@ -489,10 +489,10 @@ func TestService_CheckIssueWatch_FiltersAlreadySeen(t *testing.T) {
 	}
 
 	// Pre-seed ENG-2 as already turned into a task.
-	if _, err := f.store.ReserveIssueWatchTask(ctx, w.ID, "ENG-2", "https://linear.app/x/issue/ENG-2"); err != nil {
+	if _, err := reserveTestIssueWatchTask(ctx, f.store, w.ID, "ENG-2", "https://linear.app/x/issue/ENG-2"); err != nil {
 		t.Fatalf("seed reservation: %v", err)
 	}
-	if err := f.store.AssignIssueWatchTaskID(ctx, w.ID, "ENG-2", "task-2"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, f.store, w.ID, "ENG-2", "task-2"); err != nil {
 		t.Fatal(err)
 	}
 
