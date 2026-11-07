@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
+
 	mcpprofile "github.com/kandev/kandev/internal/mcp/profile"
 
 	"github.com/kandev/kandev/internal/execadmission"
@@ -90,6 +92,57 @@ func executionProfile(agentType string, profile *AgentProfileInfo, runtimeName s
 		resolved.ProfileID = profile.AgentName
 	}
 	return resolved.EffectiveProfile()
+}
+
+// admissionDenialReason reports only a typed, documented protocol reason. Any
+// other failure is reported as a fixed code so a transport URL or an unexpected
+// error value can never reach the log.
+func admissionDenialReason(denial error) string {
+	var denied *execadmission.Denied
+	if errors.As(denial, &denied) && denied != nil && denied.Reason != "" {
+		return denied.Reason
+	}
+	return "admission-failed"
+}
+
+// logExecutionAdmissionDenial records why an execution was denied with only the
+// bounded identity and privilege dimensions an operator needs. Providers are
+// counted, never printed, and no URL, option value, environment, secret or
+// request body is included.
+func (m *Manager) logExecutionAdmissionDenial(req *LaunchRequest, profile execadmission.Profile, runtimeName string, denial error) {
+	if m == nil || m.logger == nil || req == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("task_id", req.TaskID),
+		zap.String("session_id", req.SessionID),
+		zap.String("profile_id", profile.ID),
+		zap.String("model", profile.Model),
+		zap.String("permission_mode", profile.PermissionMode),
+		zap.String("config_digest", profile.ConfigDigest),
+		zap.String("runtime", runtimeName),
+		zap.String("denial_reason", admissionDenialReason(denial)),
+	}
+	if mcp := req.McpProfile; mcp != nil {
+		capabilities := make([]string, 0, len(mcp.Capabilities))
+		for _, capability := range mcp.Capabilities {
+			capabilities = append(capabilities, string(capability))
+		}
+		var packages []string
+		if mcp.BuiltinPackages != nil {
+			for _, pkg := range mcp.BuiltinPackages.Packages {
+				packages = append(packages, string(pkg))
+			}
+		}
+		fields = append(fields,
+			zap.String("mcp_surface", string(mcp.Surface)),
+			zap.Bool("mcp_read_only", mcp.ReadOnly),
+			zap.Strings("mcp_capabilities", capabilities),
+			zap.Strings("mcp_packages", packages),
+			zap.Int("mcp_provider_count", len(mcp.Providers)),
+		)
+	}
+	m.logger.Warn("execution admission denied", fields...)
 }
 
 // admissionMCPGrants reduces a resolved MCP context to the privilege dimensions
@@ -183,6 +236,7 @@ func (m *Manager) admitResolvedLaunch(ctx context.Context, req *LaunchRequest, a
 		return execadmission.Profile{}, err
 	}
 	if err := m.admitCandidate(ctx, req.SessionID, req.TaskID, effective); err != nil {
+		m.logExecutionAdmissionDenial(req, effective, string(models.ExecutorType(req.ExecutorType).Runtime()), err)
 		return execadmission.Profile{}, err
 	}
 	return effective, nil
