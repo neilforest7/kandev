@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 )
 
 func WatchIssueIdentity(organizationID, issueID string) (string, error) {
@@ -285,12 +286,8 @@ func (s *Store) DeleteIssueWatch(ctx context.Context, id string) error {
 
 // ReserveIssueWatchTask keeps incomplete reservations eligible for idempotent retry.
 func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID string, issue *LinearIssue) (bool, error) {
-	if issue == nil || watchID == "" || issue.Identifier == "" || issue.URL == "" {
-		return false, errors.New("linear: incomplete issue reservation")
-	}
-	if (issue.RecoveryPending && (issue.ReservationIdentifier == "" || issue.ReservationURL == "" || issue.ReservationID == "")) ||
-		(!issue.RecoveryPending && (issue.ReservationIdentifier != "" || issue.ReservationURL != "")) {
-		return false, errors.New("linear: incomplete recovery identity")
+	if err := validateIssueReservation(watchID, issue); err != nil {
+		return false, err
 	}
 	identity, err := WatchIssueIdentity(issue.OrganizationID, issue.ID)
 	if err != nil {
@@ -305,17 +302,8 @@ func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID string, issue
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if dialect.IsPostgres(s.db.DriverName()) {
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`), "linear-watch:"+watchID+":"+identity); err != nil {
-			return false, err
-		}
-	}
-	query := `SELECT id, issue_watch_id, issue_identifier, issue_url, task_id, created_at FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND id LIKE ?`
-	if dialect.IsPostgres(s.db.DriverName()) {
-		query += ` FOR UPDATE`
-	}
-	var rows []IssueWatchTask
-	if err := tx.SelectContext(ctx, &rows, s.db.Rebind(query), watchID, identity+":%"); err != nil {
+	rows, err := s.lockIssueWatchReservations(ctx, tx, watchID, identity)
+	if err != nil {
 		return false, err
 	}
 	if len(rows) > 1 {
@@ -325,13 +313,9 @@ func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID string, issue
 		if issue.RecoveryPending {
 			return false, errors.New("linear: recovery reservation no longer exists")
 		}
-		generation := uuid.NewString()
-		for generation == watchID {
-			generation = uuid.NewString()
-		}
-		row := IssueWatchTask{ID: identity + ":" + generation, IssueWatchID: watchID, IssueIdentifier: identifier, IssueURL: issueURL}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO linear_issue_watch_tasks (id, issue_watch_id, issue_identifier, issue_url, task_id, created_at) VALUES (?, ?, ?, ?, '', ?)`), row.ID, watchID, identifier, issueURL, time.Now().UTC()); err != nil {
-			return false, fmt.Errorf("linear: reserve issue identity: %w", err)
+		row, err := s.insertIssueWatchReservation(ctx, tx, watchID, identity, identifier, issueURL)
+		if err != nil {
+			return false, err
 		}
 		rows = append(rows, row)
 	}
@@ -344,6 +328,46 @@ func (s *Store) ReserveIssueWatchTask(ctx context.Context, watchID string, issue
 	}
 	issue.ReservationID = row.ID
 	return row.TaskID == "", nil
+}
+
+func (s *Store) lockIssueWatchReservations(ctx context.Context, tx *sqlx.Tx, watchID, identity string) ([]IssueWatchTask, error) {
+	if dialect.IsPostgres(s.db.DriverName()) {
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`), "linear-watch:"+watchID+":"+identity); err != nil {
+			return nil, err
+		}
+	}
+	query := `SELECT id, issue_watch_id, issue_identifier, issue_url, task_id, created_at FROM linear_issue_watch_tasks WHERE issue_watch_id = ? AND id LIKE ?`
+	if dialect.IsPostgres(s.db.DriverName()) {
+		query += ` FOR UPDATE`
+	}
+	var rows []IssueWatchTask
+	if err := tx.SelectContext(ctx, &rows, s.db.Rebind(query), watchID, identity+":%"); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func validateIssueReservation(watchID string, issue *LinearIssue) error {
+	if issue == nil || watchID == "" || issue.Identifier == "" || issue.URL == "" {
+		return errors.New("linear: incomplete issue reservation")
+	}
+	if (issue.RecoveryPending && (issue.ReservationIdentifier == "" || issue.ReservationURL == "" || issue.ReservationID == "")) ||
+		(!issue.RecoveryPending && (issue.ReservationIdentifier != "" || issue.ReservationURL != "")) {
+		return errors.New("linear: incomplete recovery identity")
+	}
+	return nil
+}
+
+func (s *Store) insertIssueWatchReservation(ctx context.Context, tx *sqlx.Tx, watchID, identity, identifier, issueURL string) (IssueWatchTask, error) {
+	generation := uuid.NewString()
+	for generation == watchID {
+		generation = uuid.NewString()
+	}
+	row := IssueWatchTask{ID: identity + ":" + generation, IssueWatchID: watchID, IssueIdentifier: identifier, IssueURL: issueURL}
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO linear_issue_watch_tasks (id, issue_watch_id, issue_identifier, issue_url, task_id, created_at) VALUES (?, ?, ?, ?, '', ?)`), row.ID, watchID, identifier, issueURL, time.Now().UTC()); err != nil {
+		return IssueWatchTask{}, fmt.Errorf("linear: reserve issue identity: %w", err)
+	}
+	return row, nil
 }
 
 func (s *Store) ListIssueWatchReservations(ctx context.Context, watchID string) ([]IssueWatchTask, error) {

@@ -932,22 +932,23 @@ func (a *issueTaskCreatorAdapter) CreateIssueTask(ctx context.Context, req *orch
 	if err != nil {
 		return nil, err
 	}
-	if req.ExternalID != "" {
-		for _, key := range []string{"linear_issue_watch_id", "linear_issue_identifier", "linear_issue_url"} {
-			got, ok := result.Task.Metadata[key].(string)
-			want, valid := req.Metadata[key].(string)
-			if !ok || !valid || got == "" || got != want {
-				return nil, fmt.Errorf("issue task source association changed")
-			}
+	if req.ExternalID == "" {
+		return result.Task, nil
+	}
+	for _, key := range []string{"linear_issue_watch_id", "linear_issue_identifier", "linear_issue_url"} {
+		got, ok := result.Task.Metadata[key].(string)
+		want, valid := req.Metadata[key].(string)
+		if !ok || !valid || got == "" || got != want {
+			return nil, fmt.Errorf("issue task source association changed")
 		}
-		if result.Outcome == taskservice.CreateTaskOutcomeCreated {
-			if err := a.svc.MarkLinearWatchCreationComplete(ctx, result.Task.ID, req.ExternalID); err != nil {
-				return nil, err
-			}
-		}
-		if err := a.svc.SettleLinearWatchCreation(ctx, result.Task.ID, req.ExternalID); err != nil {
+	}
+	if result.Outcome == taskservice.CreateTaskOutcomeCreated {
+		if err := a.svc.MarkLinearWatchCreationComplete(ctx, result.Task.ID, req.ExternalID); err != nil {
 			return nil, err
 		}
+	}
+	if err := a.svc.SettleLinearWatchCreation(ctx, result.Task.ID, req.ExternalID); err != nil {
+		return nil, err
 	}
 	return result.Task, nil
 }

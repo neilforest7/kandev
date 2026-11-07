@@ -334,24 +334,19 @@ func (s *Service) recoverIssueWatchReservations(ctx context.Context, w *IssueWat
 	seen := make(map[string]struct{}, len(reservations))
 	out := make([]*LinearIssue, 0, issueWatchSearchPageSize)
 	for _, reservation := range reservations {
-		parts := strings.SplitN(reservation.ID, ":", 4)
-		if len(parts) != 4 || parts[0] != "linear" {
-			return nil, nil, fmt.Errorf("linear: watch reservation %s has no stable issue identity", reservation.ID)
-		}
-		id, err := WatchIssueIdentity(organizationID, parts[2])
-		generation, generationErr := uuid.Parse(parts[3])
-		if err != nil || generationErr != nil || generation == uuid.Nil || generation.String() == w.ID || id+":"+generation.String() != reservation.ID {
-			return nil, nil, fmt.Errorf("linear: watch reservation %s has a different organization or invalid identity", reservation.ID)
+		id, issueID, err := reservationIssueIdentity(reservation.ID, w.ID, organizationID)
+		if err != nil {
+			return nil, nil, err
 		}
 		seen[id] = struct{}{}
 		if reservation.TaskID != "" {
 			continue
 		}
-		issue, err := client.GetIssue(ctx, parts[2])
+		issue, err := client.GetIssue(ctx, issueID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("linear: recover watch reservation %s: %w", reservation.ID, err)
 		}
-		if issue == nil || issue.ID != parts[2] || issue.Identifier == "" || issue.URL == "" {
+		if issue == nil || issue.ID != issueID || issue.Identifier == "" || issue.URL == "" {
 			return nil, nil, fmt.Errorf("linear: recovered issue does not match reservation %s", reservation.ID)
 		}
 		issue.OrganizationID = organizationID
@@ -362,6 +357,19 @@ func (s *Service) recoverIssueWatchReservations(ctx context.Context, w *IssueWat
 		out = append(out, issue)
 	}
 	return seen, out, nil
+}
+
+func reservationIssueIdentity(reservationID, watchID, organizationID string) (string, string, error) {
+	parts := strings.SplitN(reservationID, ":", 4)
+	if len(parts) != 4 || parts[0] != "linear" {
+		return "", "", fmt.Errorf("linear: watch reservation %s has no stable issue identity", reservationID)
+	}
+	id, err := WatchIssueIdentity(organizationID, parts[2])
+	generation, generationErr := uuid.Parse(parts[3])
+	if err != nil || generationErr != nil || generation == uuid.Nil || generation.String() == watchID || id+":"+generation.String() != reservationID {
+		return "", "", fmt.Errorf("linear: watch reservation %s has a different organization or invalid identity", reservationID)
+	}
+	return id, parts[2], nil
 }
 
 // attachProjectDescriptions fills ProjectDescription on every issue that
