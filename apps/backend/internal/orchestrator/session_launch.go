@@ -212,6 +212,14 @@ type LaunchSessionRequest struct {
 	// Start agent button launches it later. It is an internal server-side flag
 	// set from EnsureSessionOptions, kept off the wire protocol (`json:"-"`).
 	NoAgentLaunch bool `json:"-"`
+	// RecoveryPrompt carries the composed first-start prompt for an explicit
+	// fresh_start of a failed session with no stored initial submission. It is
+	// server-composed, so it stays off the wire.
+	RecoveryPrompt string `json:"-"`
+	// RetryFailedTaskRoot marks the explicit operator retry_launch of a failed
+	// task root. Only that path reserves the failed state and promotes it back
+	// on a confirmed agent start.
+	RetryFailedTaskRoot bool `json:"-"`
 	// NoInitialPrompt starts an explicitly replaced utility session without
 	// composing configuration instructions into an otherwise empty first turn.
 	NoInitialPrompt bool `json:"-"`
@@ -1117,8 +1125,10 @@ func (s *Service) launchResume(ctx context.Context, req *LaunchSessionRequest) (
 		ContinuationPrompt:               req.ContinuationPrompt,
 		DeferInitialPrompt:               req.DeferRecoveryResolution,
 		RecoveryAction:                   req.RecoveryAction,
-		StartAgentSynchronously: req.DeferRecoveryResolution &&
-			(req.ForceContextContinuation || req.RecoveryAction == recoveryActionResume),
+		RecoveryPrompt:                   req.RecoveryPrompt,
+		StartAgentSynchronously: req.RetryFailedTaskRoot || (req.DeferRecoveryResolution &&
+			(req.ForceContextContinuation || req.RecoveryAction == recoveryActionResume)),
+		ExplicitFailedTaskRetry: req.RetryFailedTaskRoot,
 	}
 	var execution *executor.TaskExecution
 	var err error
@@ -1424,6 +1434,19 @@ type RecoverSessionOptions struct {
 	IdempotencyKey string
 	SettingsPolicy executor.ResumeSettingsPolicy
 	ErrorStamp     string
+	// RetryFailedTaskRoot marks the explicit operator retry of a failed root.
+	RetryFailedTaskRoot bool
+}
+
+// RecoverFailedTaskRoot is the explicit operator retry of a failed task root.
+// It is the only recovery entry that reserves the failed root state, and it does
+// so after taking ownership of the recovery admission.
+func (s *Service) RecoverFailedTaskRoot(ctx context.Context, taskID, sessionID, action, errorStamp string) (*LaunchSessionResponse, error) {
+	return s.RecoverSessionWithOptions(ctx, taskID, sessionID, action, RecoverSessionOptions{
+		SettingsPolicy:      executor.ResumeSettingsPolicyStrict,
+		ErrorStamp:          errorStamp,
+		RetryFailedTaskRoot: true,
+	})
 }
 
 // RecoverSession handles user-initiated recovery after an agent CLI failure.
@@ -1553,6 +1576,15 @@ func (s *Service) RecoverSessionWithOptions(
 		if err != nil {
 			return nil, err
 		}
+		if initialSubmission == nil {
+			// A failed session that never reached a provider turn has no stored
+			// submission, so the fresh start must compose the same native prompt
+			// a first start would send: workflow step plus task instructions.
+			resumeOptions.RecoveryPrompt, err = s.freshStartRecoveryPrompt(launchCtx, taskID, session)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if err := s.applyRecoveryActionWithSettlement(launchCtx, recoveryAdmission, sessionID, action); err != nil {
@@ -1578,6 +1610,8 @@ func (s *Service) RecoverSessionWithOptions(
 		RecoveryAction:                   action,
 		DeferRecoveryResolution:          checkpoint != nil || action == recoveryActionResume,
 		InitialPromptSubmission:          initialSubmission,
+		RecoveryPrompt:                   resumeOptions.RecoveryPrompt,
+		RetryFailedTaskRoot:              options.RetryFailedTaskRoot,
 	})
 	if err == nil && action == recoveryActionResume {
 		err = s.acknowledgeNativeResumeDelivery(launchCtx, sessionID)
@@ -1977,6 +2011,32 @@ func currentManagedCloneRelocationError(session *models.TaskSession) error {
 		return &ManagedCloneRelocationRecoveryError{Stamp: lastError.Stamp()}
 	}
 	return &ManagedCloneRelocationRecoveryError{Stale: true}
+}
+
+// freshStartRecoveryPrompt composes the first-start prompt for a failed session
+// with no stored initial submission, using the same builder a normal start uses.
+func (s *Service) freshStartRecoveryPrompt(ctx context.Context, taskID string, session *models.TaskSession) (string, error) {
+	if s.workflowStepGetter == nil || session == nil {
+		return "", nil
+	}
+	task, err := s.repo.GetTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if task == nil || task.WorkflowStepID == "" {
+		return "", nil
+	}
+	step, err := s.workflowStepGetter.GetStep(ctx, task.WorkflowStepID)
+	if err != nil {
+		return "", err
+	}
+	if step == nil {
+		return "", nil
+	}
+	prompt, _ := s.buildWorkflowPromptWithTrustedContext(
+		ctx, task.Description, step, taskID, session.ID, session.IsPassthrough, false, "",
+	)
+	return prompt, nil
 }
 
 func (s *Service) applySessionRecoveryAction(ctx context.Context, sessionID, action string) error {

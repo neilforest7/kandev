@@ -80,7 +80,30 @@ func (e *Executor) launchMCPProfile(ctx context.Context, taskID string, session 
 	if startAgent {
 		return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, true)
 	}
+	// A read-only workspace preparation must carry the same bound native policy
+	// the later agent start verifies. The raw resolution leaves the built-in
+	// packages unbound, which the runtime rejects before any agent starts.
+	if e.launchProfileIsReadOnly(ctx, session) {
+		return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, false)
+	}
 	return e.resolveTaskSessionMCPProfile(ctx, taskID, session, false)
+}
+
+// launchProfileIsReadOnly reports whether the session's resolved profile is
+// read-only, using the same lookup the bound preparation uses.
+func (e *Executor) launchProfileIsReadOnly(ctx context.Context, session *models.TaskSession) bool {
+	if session == nil || e.agentManager == nil {
+		return false
+	}
+	profileID := session.ExecutionProfileID
+	if profileID == "" {
+		profileID = session.AgentProfileID
+	}
+	if profileID == "" {
+		return false
+	}
+	info, err := e.agentManager.ResolveAgentProfile(ctx, profileID)
+	return err == nil && info != nil && info.Mode == "read-only"
 }
 
 // prepareExistingWorkspaceBuiltin binds the admitted package snapshot before an

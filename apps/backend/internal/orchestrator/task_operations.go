@@ -3557,7 +3557,7 @@ func (s *Service) resumeTaskSessionWithContinuationAndReservation(
 	options executor.ResumeOptions,
 	continuation func(context.Context, *resumeAttempt, *executor.TaskExecution) error,
 	preReserved *sessionKeyedCeilingReservation,
-) (*executor.TaskExecution, error) {
+) (execution *executor.TaskExecution, retErr error) {
 	if retryLaunchInContext(ctx) == nil && s.automationOwnsRetrySession(ctx, taskID, sessionID) {
 		return nil, automation.ErrRetryLaunchUncertain
 	}
@@ -3588,6 +3588,26 @@ func (s *Service) resumeTaskSessionWithContinuationAndReservation(
 	options = admission.options
 	attempt := admission.attempt
 	defer attempt.finish(s.resumeAttemptStore())
+	// The explicit operator retry reserves the failed root only here, where the
+	// resume attempt holds the lifecycle lock and the real admission, and a
+	// deferred rollback covers every error return before the owner is released.
+	retryReserved := false
+	if options.ExplicitFailedTaskRetry {
+		retryTask, taskErr := s.repo.GetTask(ctx, taskID)
+		if taskErr != nil {
+			return nil, taskErr
+		}
+		reserved, reserveErr := s.reactivateFailedTaskForRetry(ctx, taskID, retryTask)
+		if reserveErr != nil {
+			return nil, reserveErr
+		}
+		retryReserved = reserved
+		defer func() {
+			if retryReserved && retErr != nil {
+				s.rollbackRetryReactivation(ctx, taskID, retryReserved)
+			}
+		}()
+	}
 	initialPromptHeld := false
 	if options.HoldForInitialPrompt {
 		if !s.resumeAttemptStore().holdForInitialPrompt(attempt) {
@@ -3637,7 +3657,7 @@ func (s *Service) resumeTaskSessionWithContinuationAndReservation(
 	if err != nil {
 		return nil, err
 	}
-	execution, err := s.executor.ResumeSessionWithOptions(dispatchCtx, session, true, options)
+	execution, err = s.executor.ResumeSessionWithOptions(dispatchCtx, session, true, options)
 	releaseCeilingDispatch()
 	if execution != nil {
 		attempt.setExecutionID(execution.AgentExecutionID)
@@ -7760,10 +7780,10 @@ func (s *Service) finishPromptExecutorDispatch(
 				context.WithoutCancel(ctx), sessionID, "backend_delivery_completion_failed", delivery,
 			)
 			return &PromptResult{
-					StopReason: result.StopReason, AgentMessage: result.AgentMessage, TurnID: rollback.turnID,
-				}, &acceptedPromptDispatchError{
-					err: errors.Join(completionErr, recoveryErr),
-				}
+				StopReason: result.StopReason, AgentMessage: result.AgentMessage, TurnID: rollback.turnID,
+			}, &acceptedPromptDispatchError{
+				err: errors.Join(completionErr, recoveryErr),
+			}
 		}
 	}
 	return &PromptResult{StopReason: result.StopReason, AgentMessage: result.AgentMessage, TurnID: rollback.turnID}, nil

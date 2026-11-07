@@ -1052,6 +1052,14 @@ type ResumeOptions struct {
 	// NoInitialPrompt keeps the task description out of a fresh recovery boot;
 	// the owning continuation delivers the captured submission after readiness.
 	NoInitialPrompt bool
+	// RecoveryPrompt is the composed first-start prompt for an explicit
+	// fresh_start of a failed session that never stored an initial submission.
+	// It carries the workflow step and task instructions exactly once.
+	RecoveryPrompt string
+	// ExplicitFailedTaskRetry marks the operator retry of a failed task root: it
+	// starts the agent synchronously and promotes the reserved root state on a
+	// confirmed start. Generic resume keeps its existing Review disposition.
+	ExplicitFailedTaskRetry bool
 	// SuppressInitialMessageBackfill is used only by silent restart restore,
 	// which must preserve the transcript exactly until an ordinary prompt arrives.
 	SuppressInitialMessageBackfill bool
@@ -1579,7 +1587,7 @@ func (e *Executor) resumeSession(
 			); terminal {
 				return nil, &SessionStateSupersededError{SessionID: session.ID, State: terminalState}
 			}
-			if !completedResume && options.RecoveryAction == "" {
+			if !completedResume && (options.RecoveryAction == "" || options.ExplicitFailedTaskRetry) {
 				if err := e.writeTaskInProgressForRuntime(ctx, task.ID, session.ID); err != nil {
 					e.logger.Warn("failed to update task state after synchronous resume start",
 						zap.String("task_id", task.ID), zap.String("session_id", session.ID), zap.Error(err))
@@ -2158,6 +2166,9 @@ func newResumeLaunchRequest(
 	}
 	if options.NoInitialPrompt {
 		req.TaskDescription = ""
+	}
+	if options.RecoveryPrompt != "" && !options.ForceContextContinuation && !options.NoInitialPrompt {
+		req.TaskDescription = options.RecoveryPrompt
 	}
 
 	metadata := map[string]interface{}{}
