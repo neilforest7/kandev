@@ -26,15 +26,12 @@ func (e *Executor) PrepareTaskSessionMCPProfile(ctx context.Context, taskID stri
 		return profile, err
 	}
 	if session != nil {
-		profileID := session.ExecutionProfileID
-		if profileID == "" {
-			profileID = session.AgentProfileID
+		mode, hasProfile, modeErr := e.sessionProfileMode(ctx, session)
+		if modeErr != nil {
+			return p.Context{}, modeErr
 		}
-		if profileID != "" {
-			info, resolveErr := e.agentManager.ResolveAgentProfile(ctx, profileID)
-			if resolveErr == nil {
-				profile.ReadOnly = info != nil && info.Mode == "read-only"
-			}
+		if hasProfile {
+			profile.ReadOnly = mode == "read-only"
 		}
 	}
 	if e.builtinPolicyReader == nil {
@@ -83,7 +80,11 @@ func (e *Executor) launchMCPProfile(ctx context.Context, taskID string, session 
 	// A read-only workspace preparation must carry the same bound native policy
 	// the later agent start verifies. The raw resolution leaves the built-in
 	// packages unbound, which the runtime rejects before any agent starts.
-	if e.launchProfileIsReadOnly(ctx, session) {
+	readOnly, err := e.launchProfileIsReadOnly(ctx, session)
+	if err != nil {
+		return p.Context{}, err
+	}
+	if readOnly {
 		return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, false)
 	}
 	return e.resolveTaskSessionMCPProfile(ctx, taskID, session, false)
@@ -91,19 +92,40 @@ func (e *Executor) launchMCPProfile(ctx context.Context, taskID string, session 
 
 // launchProfileIsReadOnly reports whether the session's resolved profile is
 // read-only, using the same lookup the bound preparation uses.
-func (e *Executor) launchProfileIsReadOnly(ctx context.Context, session *models.TaskSession) bool {
-	if session == nil || e.agentManager == nil {
-		return false
+func (e *Executor) launchProfileIsReadOnly(ctx context.Context, session *models.TaskSession) (bool, error) {
+	mode, hasProfile, err := e.sessionProfileMode(ctx, session)
+	if err != nil {
+		return false, err
+	}
+	return hasProfile && mode == "read-only", nil
+}
+
+// sessionProfileMode resolves the session's agent profile mode at the MCP trust
+// boundary. A missing resolver, a resolution error or an absent profile with a
+// non-empty profile id is a refusal, never a writable fallback. A session with
+// no profile id keeps the pre-existing base-profile behavior.
+func (e *Executor) sessionProfileMode(ctx context.Context, session *models.TaskSession) (string, bool, error) {
+	if session == nil {
+		return "", false, nil
 	}
 	profileID := session.ExecutionProfileID
 	if profileID == "" {
 		profileID = session.AgentProfileID
 	}
 	if profileID == "" {
-		return false
+		return "", false, nil
+	}
+	if e.agentManager == nil {
+		return "", true, fmt.Errorf("resolve agent profile %q: agent manager is unavailable", profileID)
 	}
 	info, err := e.agentManager.ResolveAgentProfile(ctx, profileID)
-	return err == nil && info != nil && info.Mode == "read-only"
+	if err != nil {
+		return "", true, fmt.Errorf("resolve agent profile %q: %w", profileID, err)
+	}
+	if info == nil {
+		return "", true, fmt.Errorf("resolve agent profile %q: profile is unavailable", profileID)
+	}
+	return info.Mode, true, nil
 }
 
 // prepareExistingWorkspaceBuiltin binds the admitted package snapshot before an

@@ -33,6 +33,17 @@ func TestReadOnlyWorkspacePreparationBindsTheNativePolicy(t *testing.T) {
 	require.NotEmpty(t, profile.BuiltinPackages.Packages)
 	require.Equal(t, 1, reader.reads, "the native policy snapshot is read once")
 
+	// An unavailable profile resolver is a refusal at the trust boundary, never
+	// a writable fallback.
+	unavailable := newTestExecutor(t, nil, repo)
+	unavailable.SetBuiltinPolicyReader(reader)
+	if _, err := unavailable.launchMCPProfile(context.Background(), "task", session, false); err == nil {
+		t.Fatal("a nil agent manager must refuse the profile mode, not treat it as writable")
+	}
+	if _, err := unavailable.PrepareTaskSessionMCPProfile(context.Background(), "task", session, false); err == nil {
+		t.Fatal("the bound preparation must refuse an unavailable profile mode")
+	}
+
 	// The negative guard is unchanged: an unbound read-only profile is still
 	// rejected rather than silently allowed.
 	unbound, err := exec.resolveTaskSessionMCPProfile(context.Background(), "task", session, false)
