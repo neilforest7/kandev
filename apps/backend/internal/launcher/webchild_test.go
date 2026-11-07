@@ -14,7 +14,7 @@ func TestWebCommandUnix(t *testing.T) {
 	if cmd != "pnpm" {
 		t.Fatalf("command = %q, want pnpm", cmd)
 	}
-	want := []string{"-C", "apps", "--filter", "@kandev/web", "dev"}
+	want := []string{"-C", "apps", "--filter", "@kandev/web", "dev", "--host", "127.0.0.1"}
 	if len(args) != len(want) {
 		t.Fatalf("args = %v, want %v", args, want)
 	}
@@ -30,7 +30,7 @@ func TestWebCommandWindowsUsesCmdExeShim(t *testing.T) {
 	if cmd != "cmd.exe" {
 		t.Fatalf("command = %q, want cmd.exe", cmd)
 	}
-	want := []string{"/c", "pnpm", "-C", "apps", "--filter", "@kandev/web", "dev"}
+	want := []string{"/c", "pnpm", "-C", "apps", "--filter", "@kandev/web", "dev", "--host", "127.0.0.1"}
 	if len(args) != len(want) {
 		t.Fatalf("args = %v, want %v", args, want)
 	}

@@ -29,7 +29,7 @@ func webCommand() (string, []string) {
 }
 
 func webCommandFor(goos string) (string, []string) {
-	args := []string{"-C", "apps", "--filter", "@kandev/web", "dev"}
+	args := []string{"-C", "apps", "--filter", "@kandev/web", "dev", "--host", "127.0.0.1"}
 	if goos == goosWindows {
 		return cmdExe, append([]string{"/c", "pnpm"}, args...)
 	}
