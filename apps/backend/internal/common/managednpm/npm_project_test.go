@@ -1,9 +1,13 @@
 package managednpm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -29,6 +33,21 @@ func TestPrepareNPMProjectPrefixUsesPrivateTemporaryRoot(t *testing.T) {
 	got := args[2]
 	if !filepath.IsAbs(got) || !strings.HasPrefix(got, filepath.Clean(tempRoot)+string(filepath.Separator)) {
 		t.Fatalf("npm project prefix = %q, want absolute path under system temp root %q", got, tempRoot)
+	}
+	var identity string
+	if runtime.GOOS == "windows" {
+		current, err := user.Current()
+		if err != nil || current == nil {
+			t.Fatalf("current Windows user = (%v, %v)", current, err)
+		}
+		identity = current.Uid
+	} else {
+		identity = strconv.Itoa(os.Getuid())
+	}
+	userHash := sha256.Sum256([]byte(identity))
+	want := filepath.Join(tempRoot, "kandev-managed-npm-runtime-"+hex.EncodeToString(userHash[:8]))
+	if got != want {
+		t.Fatalf("npm project prefix = %q, want identity-scoped path %q", got, want)
 	}
 	info, err := os.Stat(got)
 	if err != nil || !info.IsDir() {

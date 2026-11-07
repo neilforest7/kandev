@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -72,11 +74,21 @@ func npmProjectPrefixPath() (string, error) {
 	if strings.TrimSpace(tempRoot) == "" || !filepath.IsAbs(tempRoot) {
 		return "", errors.New("system temporary root is unavailable")
 	}
-	current, err := user.Current()
-	if err != nil || current == nil || strings.TrimSpace(current.Uid) == "" {
-		return "", errors.New("execution user is unavailable")
+	identity := ""
+	if runtime.GOOS == "windows" {
+		current, err := user.Current()
+		if err != nil || current == nil || strings.TrimSpace(current.Uid) == "" {
+			return "", errors.New("execution user is unavailable")
+		}
+		identity = current.Uid
+	} else {
+		uid := os.Getuid()
+		if uid < 0 {
+			return "", errors.New("execution user is unavailable")
+		}
+		identity = strconv.Itoa(uid)
 	}
-	userHash := sha256.Sum256([]byte(current.Uid))
+	userHash := sha256.Sum256([]byte(identity))
 	scope := hex.EncodeToString(userHash[:8])
 	return filepath.Join(tempRoot, "kandev-managed-npm-runtime-"+scope), nil
 }
