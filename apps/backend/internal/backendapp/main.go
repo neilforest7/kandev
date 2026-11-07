@@ -845,14 +845,7 @@ func startAgentInfrastructure(
 	// which only exists once the orchestrator is built.
 	lifecycleMgr.SetExecutionMCPPolicyResolver(orchestratorSvc.ExecutionRosterMCPProfile)
 	lifecycleMgr.SetExecutionRuntimeResolver(func(ctx context.Context, taskID, _ string) (string, error) {
-		task, err := repos.Task.GetTask(ctx, taskID)
-		if err != nil {
-			return "", err
-		}
-		if task == nil {
-			return "", errors.New("execution roster task is unavailable")
-		}
-		return orchestratorSvc.ExecutionRosterRuntime(ctx, task.WorkspaceID)
+		return orchestratorSvc.ExecutionRosterRuntime(ctx, taskID)
 	})
 	services.Task.SetExecutionConfigValidator(lifecycleMgr.ValidateAdmittedExecution)
 	orchestratorSvc.SetPendingRemoteRecoveryChecker(lifecycleMgr.HasPendingRemoteRecovery)

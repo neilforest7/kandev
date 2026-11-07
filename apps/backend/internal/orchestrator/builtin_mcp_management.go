@@ -181,10 +181,10 @@ func (s *Service) ExecutionRosterMCPProfile(ctx context.Context, taskID, profile
 }
 
 // ExecutionRosterRuntime resolves the native runtime bucket the launch path
-// would use for a fresh session of this workspace.
-func (s *Service) ExecutionRosterRuntime(ctx context.Context, workspaceID string) (string, error) {
+// would use for this task, including a watch's task-level executor profile.
+func (s *Service) ExecutionRosterRuntime(ctx context.Context, taskID string) (string, error) {
 	if s.executor == nil {
 		return "", errors.New("execution roster runtime resolver requires an executor")
 	}
-	return s.executor.ResolveWorkspaceRuntime(ctx, workspaceID)
+	return s.executor.ResolveTaskRuntime(ctx, taskID)
 }
