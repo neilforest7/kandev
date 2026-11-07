@@ -503,8 +503,13 @@ func (r *Repository) CompleteTurnWithConversationReceipt(ctx context.Context, tu
 		return nil, err
 	}
 	now := time.Now().UTC()
+	// Closure is immutable: a second completion for a turn this transaction did
+	// not open must not rewrite its measured span (a turn already closed by a
+	// terminal transition or by abandon). The read-back below describes whichever
+	// bounds the row ends up with, so the receipt never claims an edit that the
+	// guard suppressed.
 	if _, err := tx.ExecContext(ctx, tx.Rebind(`
-		UPDATE task_session_turns SET completed_at = ?, updated_at = ? WHERE id = ?
+		UPDATE task_session_turns SET completed_at = ?, updated_at = ? WHERE id = ? AND completed_at IS NULL
 	`), now, now, turnID); err != nil {
 		return nil, err
 	}

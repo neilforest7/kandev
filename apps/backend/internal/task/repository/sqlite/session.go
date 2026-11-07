@@ -440,30 +440,113 @@ func serializeTurnMetadata(metadata map[string]interface{}) (string, error) {
 	return string(metadataBytes), nil
 }
 
-// CompleteTurn marks a turn as completed with the current time
+// CompleteTurn marks a turn as completed with the current time. The
+// completed_at IS NULL guard makes closure immutable: a late completion for a
+// turn that was already closed (by a normal terminal transition or by abandon)
+// must not rewrite its measured span.
 func (r *Repository) CompleteTurn(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	_, err := r.db.ExecContext(ctx, r.db.Rebind(`
 		UPDATE task_session_turns
 		SET completed_at = ?, updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND completed_at IS NULL
 	`), now, now, id)
 	return err
 }
 
 // AbandonTurn marks a turn as completed with completed_at = started_at, giving it
-// zero duration. Used when a turn was orphaned by an interruption (backend
-// restart, agent crash) and the previous "running" window was not real work —
-// recording `now` would inflate analytics and the UI's last-turn duration with
-// hours of dead time.
+// zero duration, and records durably whether that zero is measured or unknown.
+// Used when a turn was orphaned by an interruption (backend restart, agent
+// crash). A turn that was provably never dispatched really did no work, so its
+// zero span is authoritative. Any other orphan may have run for an unknown time:
+// recording `now` would charge dead downtime and recording zero would silently
+// discard real work, so the row is marked unconfirmed and readers report the
+// span as unknown rather than zero.
 func (r *Repository) AbandonTurn(ctx context.Context, id string) error {
-	now := time.Now().UTC()
-	_, err := r.db.ExecContext(ctx, r.db.Rebind(`
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin turn abandon: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// The session id is immutable, so resolving it before the lock is safe and is
+	// the only value read ahead of it. Everything mutable is read under the lock
+	// below.
+	var sessionID string
+	err = tx.QueryRowxContext(ctx, r.db.Rebind(`
+		SELECT task_session_id FROM task_session_turns WHERE id = ?
+	`), id).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve session for turn abandon: %w", err)
+	}
+	if err := lockSessionTurnWrites(ctx, tx, r.db.DriverName(), sessionID); err != nil {
+		return err
+	}
+
+	// Re-read under the lock. A dispatch can record its attempt between a read
+	// taken earlier and this point; classifying from that stale snapshot would
+	// write the attempt marker away and misreport real work as never dispatched.
+	var metadataJSON string
+	var completedAt sql.NullTime
+	err = tx.QueryRowxContext(ctx, r.db.Rebind(`
+		SELECT COALESCE(metadata, '{}'), completed_at FROM task_session_turns WHERE id = ?
+	`), id).Scan(&metadataJSON, &completedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read turn before abandon: %w", err)
+	}
+	if completedAt.Valid {
+		// Already closed, and closure is immutable.
+		return nil
+	}
+	// A turn message is native dispatch evidence, so it beats the attempt marker.
+	referenced, err := r.promptTurnHasMessages(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	metadata, _, err := applyTurnMetadataPatch(metadataJSON, abandonTurnMarker(metadataJSON, referenced), nil)
+	if err != nil {
+		return err
+	}
+	serialized, err := serializeTurnMetadata(metadata)
+	if err != nil {
+		return err
+	}
+	now := r.nowUTC()
+	if _, err := tx.ExecContext(ctx, r.db.Rebind(`
 		UPDATE task_session_turns
-		SET completed_at = started_at, updated_at = ?
+		SET completed_at = started_at, metadata = ?, updated_at = ?
 		WHERE id = ? AND completed_at IS NULL
-	`), now, id)
-	return err
+	`), serialized, now, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// abandonTurnMarker classifies an abandoned turn. A referencing message proves
+// dispatch, so only a turn with no attempt and no message is a measured zero.
+func abandonTurnMarker(metadataJSON string, referenced bool) map[string]interface{} {
+	metadata := make(map[string]interface{})
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		return map[string]interface{}{models.TurnMetaKeyAbandonedUnconfirmed: true}
+	}
+	if referenced || metadataFlagIsTrue(metadata[models.TurnMetaKeyAbandonedUnconfirmed]) {
+		return map[string]interface{}{models.TurnMetaKeyAbandonedUnconfirmed: true}
+	}
+	if metadataFlagIsTrue(metadata[models.TurnMetaKeyAbandonedNotDispatched]) {
+		return map[string]interface{}{models.TurnMetaKeyAbandonedNotDispatched: true}
+	}
+	pending := metadataFlagIsTrue(metadata[models.TurnMetaKeyPromptDispatchPending])
+	attempted := metadataFlagIsTrue(metadata[models.TurnMetaKeyPromptDispatchAttempted])
+	if pending && !attempted {
+		return map[string]interface{}{models.TurnMetaKeyAbandonedNotDispatched: true}
+	}
+	return map[string]interface{}{models.TurnMetaKeyAbandonedUnconfirmed: true}
 }
 
 // GetLatestTurnBySessionID returns the last turn ListTurnsBySession would list
@@ -534,6 +617,96 @@ func (r *Repository) ListTurnsBySession(ctx context.Context, sessionID string) (
 		return nil, err
 	}
 	return result, nil
+}
+
+// ReadSessionTurnIntervals returns every turn row for a session in start order,
+// including rows the transcript history predicate hides, together with the
+// current open turn, the session state, and the turns a message references.
+// Execution accounting must see a hidden reservation so it can report the span
+// as unbilled instead of silently omitting it from a total.
+//
+// All four come from one read snapshot: a turn rollover between separate reads
+// would pair a stale current-turn id with fresh rows and misclassify a live turn.
+func (r *Repository) ReadSessionTurnIntervals(
+	ctx context.Context,
+	sessionID string,
+) ([]*models.Turn, string, models.TaskSessionState, map[string]struct{}, error) {
+	tx, err := r.beginConversationSourceRead(ctx)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var state models.TaskSessionState
+	err = tx.QueryRowxContext(ctx, tx.Rebind(`
+		SELECT state FROM task_sessions WHERE id = ?
+	`), sessionID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", "", nil, fmt.Errorf("%w: %s", models.ErrTaskSessionNotFound, sessionID)
+	}
+	if err != nil {
+		return nil, "", "", nil, fmt.Errorf("read session state for turn intervals: %w", err)
+	}
+	activeTurnID, err := readMessageTurnWindowActiveTurnID(ctx, tx, r.ro.DriverName(), sessionID)
+	if err != nil {
+		return nil, "", "", nil, fmt.Errorf("read current turn for turn intervals: %w", err)
+	}
+
+	rows, err := tx.QueryxContext(ctx, tx.Rebind(`
+		SELECT id, task_session_id, task_id, execution_profile_id, route_generation, started_at, completed_at, metadata, created_at, updated_at
+		FROM task_session_turns
+		WHERE task_session_id = ?
+		ORDER BY started_at ASC, created_at ASC, id ASC
+	`), sessionID)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	var turns []*models.Turn
+	for rows.Next() {
+		turn, scanErr := scanTurn(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, "", "", nil, scanErr
+		}
+		turns = append(turns, turn)
+	}
+	turnErr := rows.Err()
+	// Close before commit: an open statement blocks the transaction commit.
+	_ = rows.Close()
+	if turnErr != nil {
+		return nil, "", "", nil, turnErr
+	}
+
+	// Join through the turn rows: native authority matches messages by turn id
+	// alone, so a message whose session column differs still proves dispatch.
+	referenced := make(map[string]struct{})
+	messageRows, err := tx.QueryxContext(ctx, tx.Rebind(`
+		SELECT DISTINCT m.turn_id
+		FROM task_session_messages m
+		JOIN task_session_turns t ON t.id = m.turn_id
+		WHERE t.task_session_id = ?
+	`), sessionID)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	for messageRows.Next() {
+		var turnID string
+		if scanErr := messageRows.Scan(&turnID); scanErr != nil {
+			_ = messageRows.Close()
+			return nil, "", "", nil, scanErr
+		}
+		referenced[turnID] = struct{}{}
+	}
+	messageErr := messageRows.Err()
+	_ = messageRows.Close()
+	if messageErr != nil {
+		return nil, "", "", nil, messageErr
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, "", "", nil, fmt.Errorf("commit turn interval read: %w", err)
+	}
+	return turns, activeTurnID, state, referenced, nil
 }
 
 // taskSessionAgentWorkspaceSelect projects the confirmed native workspace from

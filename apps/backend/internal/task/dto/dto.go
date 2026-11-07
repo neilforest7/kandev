@@ -768,6 +768,27 @@ type ListTurnsResponse struct {
 	Total int       `json:"total"`
 }
 
+// ExecutionIntervalDTO is one turn's contribution to a session's active time.
+// EndedAt is always present and null for an active span (which bills up to the
+// read) and for an unknown span (which must not be billed at all): strict
+// consumers reject an omitted key. It carries no turn metadata, message content,
+// or provider identifiers.
+type ExecutionIntervalDTO struct {
+	TurnID    string  `json:"turnId"`
+	StartedAt string  `json:"startedAt"`
+	EndedAt   *string `json:"endedAt"`
+	State     string  `json:"state"`
+}
+
+// SessionExecutionIntervalsDTO is the execution-interval read. Complete is
+// false when any interval is unknown, which makes the sum a lower bound.
+type SessionExecutionIntervalsDTO struct {
+	SessionID string                 `json:"sessionId"`
+	TaskID    string                 `json:"taskId"`
+	Complete  bool                   `json:"complete"`
+	Intervals []ExecutionIntervalDTO `json:"intervals"`
+}
+
 type ListWorkflowsResponse struct {
 	Workflows            []WorkflowDTO                `json:"workflows"`
 	Total                int                          `json:"total"`
@@ -1739,4 +1760,32 @@ func FromTurn(turn *models.Turn) TurnDTO {
 		CreatedAt:   turn.CreatedAt.UTC().Format(turnTimestampLayout),
 		UpdatedAt:   turn.UpdatedAt.UTC().Format(turnTimestampLayout),
 	}
+}
+
+// FromSessionExecutionIntervals converts the service projection to its wire
+// shape. Only measured or currently-billable bounds are emitted: an active
+// interval has no end because it bills up to the read, and an unknown interval
+// has none because crediting a bound for it would invent billable time.
+func FromSessionExecutionIntervals(
+	intervals *models.SessionExecutionIntervals,
+) SessionExecutionIntervalsDTO {
+	result := SessionExecutionIntervalsDTO{
+		SessionID: intervals.SessionID,
+		TaskID:    intervals.TaskID,
+		Complete:  intervals.Complete,
+		Intervals: make([]ExecutionIntervalDTO, 0, len(intervals.Intervals)),
+	}
+	for _, interval := range intervals.Intervals {
+		dto := ExecutionIntervalDTO{
+			TurnID:    interval.TurnID,
+			StartedAt: interval.StartedAt.UTC().Format(turnTimestampLayout),
+			State:     interval.State,
+		}
+		if interval.EndedAt != nil {
+			formatted := interval.EndedAt.UTC().Format(turnTimestampLayout)
+			dto.EndedAt = &formatted
+		}
+		result.Intervals = append(result.Intervals, dto)
+	}
+	return result
 }
