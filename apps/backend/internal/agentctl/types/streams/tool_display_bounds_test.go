@@ -49,7 +49,7 @@ func TestBoundedToolLargeValues(t *testing.T) {
 
 func TestBoundedToolEventIsImmutableAndIdempotent(t *testing.T) {
 	output := map[string]any{"text": strings.Repeat("x", 1<<20)}
-	payload := NewMCPTool("fetch", map[string]any{"query": strings.Repeat("x", 1<<20)})
+	payload := NewMCPTool("session", "fetch", map[string]any{"query": strings.Repeat("x", 1<<20)})
 	payload.Generic().Output = output
 	payload.SetMonitorIdentity("monitor", false)
 	event := AgentEvent{Type: EventTypeToolUpdate, ToolCallID: "tool", ParentToolCallID: "parent", ToolStatus: "error", NormalizedPayload: payload,

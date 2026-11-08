@@ -75,6 +75,8 @@ type NormalizedPayload struct {
 	// It stays internal because persistence should contain the canonical tool
 	// name, input, and result rather than transport-specific metadata.
 	mcpTool bool
+	// mcpSessionID names the provider session this MCP call was tracked under; both fields stay internal.
+	mcpSessionID string
 }
 
 // --- Getters for NormalizedPayload ---
@@ -95,6 +97,14 @@ func (p *NormalizedPayload) ContextCompaction() *ContextCompactionPayload {
 	return p.contextCompaction
 }
 func (p *NormalizedPayload) IsMCPTool() bool { return p != nil && p.mcpTool }
+
+// MCPSourceSessionID returns the provider session that produced this MCP payload.
+func (p *NormalizedPayload) MCPSourceSessionID() string {
+	if p == nil {
+		return ""
+	}
+	return p.mcpSessionID
+}
 
 // Snapshot returns a detached copy of the normalized payload. A snapshot owns
 // every pointer, slice, and JSON-compatible value reachable from the payload so
@@ -120,6 +130,7 @@ func (p *NormalizedPayload) Snapshot() *NormalizedPayload {
 		backgroundWork:    cloneBackgroundWorkPayload(p.backgroundWork),
 		monitor:           cloneMonitorPayload(p.monitor),
 		mcpTool:           p.mcpTool,
+		mcpSessionID:      p.mcpSessionID,
 	}
 }
 
@@ -683,10 +694,11 @@ func NewGeneric(name string, input any) *NormalizedPayload {
 	}
 }
 
-// NewMCPTool creates a generic payload with trusted MCP transport provenance.
-func NewMCPTool(name string, input any) *NormalizedPayload {
+// NewMCPTool creates a generic payload with trusted MCP provenance bound to sessionID.
+func NewMCPTool(sessionID, name string, input any) *NormalizedPayload {
 	payload := NewGeneric(name, input)
 	payload.mcpTool = true
+	payload.mcpSessionID = sessionID
 	return payload
 }
 

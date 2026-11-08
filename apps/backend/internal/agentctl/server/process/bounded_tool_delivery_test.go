@@ -18,7 +18,7 @@ func TestBoundedToolResultContinuesToTerminal(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			manager := newIncrementalShellManager(t)
 			original := strings.Repeat("\x00世", 1<<19)
-			payload := streams.NewMCPTool("github.fetch", map[string]any{"url": "/actions/runs"})
+			payload := streams.NewMCPTool("session", "github.fetch", map[string]any{"url": "/actions/runs"})
 			payload.Generic().Output = map[string]any{"content": []any{map[string]any{"type": "text", "text": original}}}
 			updates := make(chan adapter.AgentEvent, 3)
 			updates <- adapter.AgentEvent{
