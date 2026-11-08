@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"go.uber.org/zap"
@@ -164,6 +165,10 @@ func admissionMCPGrants(mcp *mcpprofile.Context) *execadmission.MCPGrants {
 			grants.Packages = append(grants.Packages, string(pkg))
 		}
 	}
+	// The protected binding stores these sets sorted, so the digest sorts them
+	// too: otherwise the same bound context hashes differently after a round trip.
+	slices.Sort(grants.Capabilities)
+	slices.Sort(grants.Packages)
 	return grants
 }
 
