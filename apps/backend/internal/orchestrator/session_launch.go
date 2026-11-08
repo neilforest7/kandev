@@ -183,7 +183,10 @@ type continuationCheckpoint struct {
 // LaunchSessionRequest is the unified request for session.launch.
 type LaunchSessionRequest struct {
 	// reusePreparedPrimary is reserved for the recorded dependency launch consumer.
-	reusePreparedPrimary  bool
+	reusePreparedPrimary bool
+	// explicitRun marks an exact run command (plugin EnsureTaskRun). It is an
+	// explicit start, so the workflow-step auto-start gate does not apply.
+	explicitRun           bool
 	TaskID                string                        `json:"task_id"`
 	Intent                SessionIntent                 `json:"intent,omitempty"`
 	SessionID             string                        `json:"session_id,omitempty"`
@@ -956,7 +959,7 @@ func (s *Service) isPassthroughProfile(ctx context.Context, profileID string) bo
 // launch-token restore concern does not apply here: this path owns no
 // lifecycle token to restore.
 func (s *Service) blocksAutoStartLaunch(ctx context.Context, req *LaunchSessionRequest) bool {
-	if s.shouldBlockAutoStart(ctx, req) {
+	if !req.explicitRun && s.shouldBlockAutoStart(ctx, req) {
 		return true
 	}
 	blocked, _ := s.dependencyBlocksAutoStart(ctx, req.TaskID, "session.launch")

@@ -41,6 +41,10 @@ type EnsureSessionOptions struct {
 	// ActivationSource distinguishes passive task opening from an explicit
 	// launch action. A passive open never resumes an existing session.
 	ActivationSource LaunchActivationSource
+	// ExplicitRun marks an exact run command. With AutoStart true it starts the
+	// agent even when the step has no auto_start_agent on-enter action; the
+	// dependency gate and execution admission still apply.
+	ExplicitRun bool
 }
 
 // ensureLocks serializes EnsureSession calls per task id so concurrent callers
@@ -133,6 +137,7 @@ func (s *Service) EnsureSession(ctx context.Context, taskID string, opts ...Ensu
 		AutoStart:        intent == IntentStart,
 		NoAgentLaunch:    o.AutoStart != nil && !*o.AutoStart,
 		ActivationSource: o.ActivationSource,
+		explicitRun:      o.ExplicitRun,
 	})
 	if err != nil {
 		return nil, err
