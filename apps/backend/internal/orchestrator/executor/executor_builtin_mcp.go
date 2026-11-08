@@ -79,30 +79,7 @@ func (e *Executor) builtinPolicySnapshot(ctx context.Context, workspaceID, taskI
 }
 
 func (e *Executor) launchMCPProfile(ctx context.Context, taskID string, session *models.TaskSession, startAgent bool) (p.Context, error) {
-	if startAgent {
-		return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, true)
-	}
-	// A read-only workspace preparation must carry the same bound native policy
-	// the later agent start verifies. The raw resolution leaves the built-in
-	// packages unbound, which the runtime rejects before any agent starts.
-	readOnly, err := e.launchProfileIsReadOnly(ctx, session)
-	if err != nil {
-		return p.Context{}, err
-	}
-	if readOnly {
-		return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, false)
-	}
-	return e.resolveTaskSessionMCPProfile(ctx, taskID, session, false)
-}
-
-// launchProfileIsReadOnly reports whether the session's resolved profile is
-// read-only, using the same lookup the bound preparation uses.
-func (e *Executor) launchProfileIsReadOnly(ctx context.Context, session *models.TaskSession) (bool, error) {
-	mode, hasProfile, err := e.sessionProfileMode(ctx, session)
-	if err != nil {
-		return false, err
-	}
-	return hasProfile && mode == "read-only", nil
+	return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, startAgent)
 }
 
 // sessionProfileMode resolves the session's agent profile mode at the MCP trust

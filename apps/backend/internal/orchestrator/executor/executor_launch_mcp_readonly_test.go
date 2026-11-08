@@ -16,8 +16,9 @@ func TestReadOnlyWorkspacePreparationBindsTheNativePolicy(t *testing.T) {
 	repo := newMockRepository()
 	repo.tasks["task"] = &models.Task{ID: "task", WorkspaceID: "workspace"}
 	session := &models.TaskSession{ID: "session", TaskID: "task", AgentProfileID: "profile-ro"}
+	mode := "read-only"
 	manager := &mockAgentManager{resolveAgentProfileFunc: func(context.Context, string) (*AgentProfileInfo, error) {
-		return &AgentProfileInfo{ProfileID: "profile-ro", AgentName: "claude", Mode: "read-only"}, nil
+		return &AgentProfileInfo{ProfileID: "profile-ro", AgentName: "claude", Mode: mode}, nil
 	}}
 	exec := newTestExecutor(t, manager, repo)
 	reader := &builtinSnapshotReader{snapshot: &mcpconfig.BuiltinPolicySnapshot{
@@ -32,6 +33,15 @@ func TestReadOnlyWorkspacePreparationBindsTheNativePolicy(t *testing.T) {
 	require.NotNil(t, profile.BuiltinPackages, "workspace preparation must bind the native policy")
 	require.NotEmpty(t, profile.BuiltinPackages.Packages)
 	require.Equal(t, 1, reader.reads, "the native policy snapshot is read once")
+	// The same workspace-preparation flow must bind the native policy for a
+	// writable profile too; only the read-only branch previously did.
+	mode = "workspace-write"
+	writable, err := exec.launchMCPProfile(context.Background(), "task", session, false)
+	require.NoError(t, err)
+	require.False(t, writable.ReadOnly)
+	require.NotNil(t, writable.BuiltinPackages, "writable workspace preparation must bind the native policy")
+	require.Equal(t, profile.BuiltinPackages, writable.BuiltinPackages)
+	require.Equal(t, 2, reader.reads)
 
 	// An unavailable profile resolver is a refusal at the trust boundary, never
 	// a writable fallback.
