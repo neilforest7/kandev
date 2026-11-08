@@ -34,6 +34,11 @@ func (e *Executor) PrepareTaskSessionMCPProfile(ctx context.Context, taskID stri
 			profile.ReadOnly = mode == "read-only"
 		}
 	}
+	providers, err := e.resolveTaskMCPProviders(ctx, taskID)
+	if err != nil {
+		return p.Context{}, err
+	}
+	profile.Providers = providers
 	if e.builtinPolicyReader == nil {
 		return profile, nil
 	}
