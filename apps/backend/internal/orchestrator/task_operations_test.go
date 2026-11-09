@@ -4109,8 +4109,14 @@ func TestHandleSessionLaunchFailure_PersistsGenericCredentialFailure(t *testing.
 	if len(messages.sessionMessages) != 0 {
 		t.Fatalf("generic credential failure created %d missing-branch messages", len(messages.sessionMessages))
 	}
-	if len(eventBus.events) != 1 || eventBus.events[0].subject != events.TaskSessionStateChanged {
-		t.Fatalf("session lifecycle events = %#v, want one %s event", eventBus.events, events.TaskSessionStateChanged)
+	// The state change, then the retry_launch error an untyped launch failure
+	// records so the failed session stays recoverable.
+	if len(eventBus.events) != 2 || eventBus.events[0].subject != events.TaskSessionStateChanged ||
+		eventBus.events[1].subject != events.TaskSessionErrorChanged {
+		t.Fatalf("session lifecycle events = %#v, want %s then %s", eventBus.events, events.TaskSessionStateChanged, events.TaskSessionErrorChanged)
+	}
+	if lastErr, found := models.LoadLastAgentError(failedSession.Metadata); !found || strings.Contains(lastErr.Message, secret) {
+		t.Fatalf("recorded launch error = %+v (found %v), want a sanitized retry_launch error", lastErr, found)
 	}
 	taskRepo.mu.Lock()
 	defer taskRepo.mu.Unlock()
