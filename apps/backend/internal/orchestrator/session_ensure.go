@@ -104,10 +104,17 @@ func (s *Service) EnsureSession(ctx context.Context, taskID string, opts ...Ensu
 	}
 
 	if existing := s.findExistingSession(ctx, taskID); existing != nil {
-		if o.EnsureExecution && o.ActivationSource != LaunchActivationSourceSessionOpen {
-			s.tryEnsureExecution(ctx, existing.SessionID, seam3CallShapeViewing, launchOriginManual, "")
+		if o.ExplicitRun {
+			if resp, handled, err := s.explicitRunOnExisting(ctx, taskID, existing); handled {
+				return resp, err
+			}
+			// A finished session falls through to start a new one below.
+		} else {
+			if o.EnsureExecution && o.ActivationSource != LaunchActivationSourceSessionOpen {
+				s.tryEnsureExecution(ctx, existing.SessionID, seam3CallShapeViewing, launchOriginManual, "")
+			}
+			return existing, nil
 		}
-		return existing, nil
 	}
 
 	task, err := s.repo.GetTask(ctx, taskID)
@@ -172,6 +179,32 @@ func (s *Service) EnsureSession(ctx context.Context, taskID string, opts ...Ensu
 		ActivationDisposition: launchResp.ActivationDisposition,
 		ActivationReason:      launchResp.ActivationReason,
 	}, nil
+}
+
+// explicitRunOnExisting resolves an exact run against the task's existing
+// session. A prepared session (for example one a task page opened) is started;
+// an active session is left alone, because a readiness re-check can stop a busy
+// agent; a finished session is not handled, so the caller starts a new one.
+func (s *Service) explicitRunOnExisting(ctx context.Context, taskID string, existing *EnsureSessionResponse) (*EnsureSessionResponse, bool, error) {
+	switch models.TaskSessionState(existing.State) {
+	case models.TaskSessionStateCompleted, models.TaskSessionStateFailed, models.TaskSessionStateCancelled:
+		return nil, false, nil
+	case models.TaskSessionStateCreated:
+		launched, err := s.LaunchSession(ctx, &LaunchSessionRequest{
+			TaskID: taskID, SessionID: existing.SessionID, Intent: IntentStartCreated,
+			AgentProfileID: existing.AgentProfileID, ActivationSource: LaunchActivationSourceUserAction,
+		})
+		if err != nil {
+			return nil, true, err
+		}
+		started := *existing
+		if launched != nil && launched.State != "" {
+			started.State = launched.State
+		}
+		return &started, true, nil
+	default:
+		return existing, true, nil
+	}
 }
 
 // queuedEnsureResponse returns the exact destination owned by a durable
