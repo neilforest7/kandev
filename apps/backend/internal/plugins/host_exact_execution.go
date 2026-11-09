@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/kandev/kandev/internal/common/constants"
 	"github.com/kandev/kandev/internal/plugins/state"
 	"github.com/kdlbs/kandev/pluginsdk"
 	"google.golang.org/grpc/codes"
@@ -50,11 +51,17 @@ func (m exactExecutionManager) EnsureTaskRun(ctx context.Context, in pluginsdk.E
 	if controller == nil {
 		return exactUnavailableResult("execution_control_unavailable"), pluginsdk.ExactTaskRunResult{}, nil
 	}
-	run, err := controller.EnsureTaskRun(ctx, m.host.installationID, in)
+	// The command is admitted and its receipt intent recorded above, so the
+	// launch must survive the caller's disconnect (e.g. the bridge's HTTP
+	// timeout): run it on a detached context bounded by the Host launch
+	// timeout, like the plugin task starter adapter does.
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), constants.AgentLaunchTimeout)
+	defer cancel()
+	run, err := controller.EnsureTaskRun(runCtx, m.host.installationID, in)
 	if err != nil {
-		return finishExactExecutionError(ctx, admission, err, in.TaskID, in.ExpectedTaskResourceVersion)
+		return finishExactExecutionError(runCtx, admission, err, in.TaskID, in.ExpectedTaskResourceVersion)
 	}
-	result, err = completeExecutionRunCommand(ctx, admission, run)
+	result, err = completeExecutionRunCommand(runCtx, admission, run)
 	run.Result = result
 	return result, run, err
 }
