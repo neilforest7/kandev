@@ -71,6 +71,9 @@ type pluginLinearSourceFake struct {
 	commentArgs []string
 	states      []string
 	lastLookup  string
+	landed      map[string]string
+	lookups     int
+	addErr      error
 }
 
 func (f *pluginLinearSourceFake) GetTaskIssueLink(context.Context, string) (*linear.TaskIssueLink, error) {
@@ -109,9 +112,24 @@ func TestPluginLinearSourceWritebackUsesStableIssueIDAfterRename(t *testing.T) {
 	}
 }
 
-func (f *pluginLinearSourceFake) AddCommentForWorkspace(_ context.Context, _, issueID, body string) (string, error) {
+func (f *pluginLinearSourceFake) AddCommentForWorkspace(_ context.Context, _, issueID, body, commentID string) (string, error) {
 	f.commentArgs = append(f.commentArgs, issueID+":"+body)
+	if f.addErr != nil {
+		return "", f.addErr
+	}
+	if commentID != "" {
+		f.landed = map[string]string{commentID: issueID}
+		return commentID, nil
+	}
 	return f.commentID, nil
+}
+
+func (f *pluginLinearSourceFake) GetCommentIssueForWorkspace(_ context.Context, _, commentID string) (string, error) {
+	f.lookups++
+	if issueID, ok := f.landed[commentID]; ok {
+		return issueID, nil
+	}
+	return "", &linear.APIError{StatusCode: http.StatusNotFound, Message: "comment not found"}
 }
 
 func (f *pluginLinearSourceFake) SetIssueStateForWorkspace(_ context.Context, _, issueID, stateID string) error {
@@ -251,5 +269,27 @@ func TestPluginSourceIssueControllerRejectsAmbiguousAndUnsupportedWrites(t *test
 	var sourceErr *plugins.SourceIssueError
 	if !errors.As(err, &sourceErr) || sourceErr.Kind != plugins.SourceIssueErrorUnsupported || started {
 		t.Fatalf("unsupported write = err:%v started:%v, want unsupported before send", err, started)
+	}
+}
+
+func TestPluginLinearSettleCommentNeverDuplicates(t *testing.T) {
+	ctx := context.Background()
+	source := &pluginLinearSourceFake{landed: map[string]string{"comment-landed": "issue-id"}}
+	controller := pluginSourceIssueController{linear: source}
+	input := plugins.SourceIssueCommentSettlement{WorkspaceID: "workspace", Provider: "linear", SourceID: "issue-id", Body: "evidence"}
+
+	input.CommentID = "comment-landed"
+	if id, err := controller.SettleComment(ctx, input); err != nil || id != "comment-landed" || len(source.commentArgs) != 0 {
+		t.Fatalf("landed comment settle = %q err=%v sends=%v", id, err, source.commentArgs)
+	}
+	input.CommentID = "comment-lost"
+	if id, err := controller.SettleComment(ctx, input); err != nil || id != "comment-lost" || source.landed["comment-lost"] != "issue-id" || len(source.commentArgs) != 1 {
+		t.Fatalf("lost comment settle = %q err=%v landed=%v", id, err, source.landed)
+	}
+
+	// A transport error after the request left is not a definite failure.
+	var sourceErr *plugins.SourceIssueError
+	if err := pluginLinearWriteError(errors.New("read: connection reset by peer")); !errors.As(err, &sourceErr) || sourceErr.Kind != plugins.SourceIssueErrorUncertain {
+		t.Fatalf("transport write error = %v, want uncertain", err)
 	}
 }

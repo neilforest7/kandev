@@ -11,13 +11,19 @@ type pluginWritebackClient struct {
 	commentID    string
 	commentIDArg string
 	comment      string
+	clientID     string
 	commentErr   error
 }
 
-func (c *pluginWritebackClient) AddComment(_ context.Context, issueID, body string) (string, error) {
+func (c *pluginWritebackClient) AddComment(_ context.Context, issueID, body, commentID string) (string, error) {
 	c.commentIDArg = issueID
 	c.comment = body
+	c.clientID = commentID
 	return c.commentID, c.commentErr
+}
+
+func (c *pluginWritebackClient) GetCommentIssue(context.Context, string) (string, error) {
+	return "", nil
 }
 
 func TestPluginWriteback(t *testing.T) {
@@ -71,11 +77,11 @@ func TestPluginWriteback(t *testing.T) {
 	if _, err := fixture.svc.GetTaskIssueLink(ctx, "task-without-link"); !errors.Is(err, ErrSourceLinkNotFound) {
 		t.Fatalf("missing task link error = %v, want ErrSourceLinkNotFound", err)
 	}
-	commentID, err := fixture.svc.AddCommentForWorkspace(ctx, workspaceID, issue.ID, "Progress: tests pass")
+	commentID, err := fixture.svc.AddCommentForWorkspace(ctx, workspaceID, issue.ID, "Progress: tests pass", "client-comment-id")
 	if err != nil {
 		t.Fatalf("AddCommentForWorkspace: %v", err)
 	}
-	if commentID != "comment-1" || client.commentIDArg != issue.ID || client.comment != "Progress: tests pass" {
+	if commentID != "comment-1" || client.commentIDArg != issue.ID || client.comment != "Progress: tests pass" || client.clientID != "client-comment-id" {
 		t.Fatalf("comment request not forwarded: id=%q issue=%q body=%q", commentID, client.commentIDArg, client.comment)
 	}
 	if err := fixture.svc.SetIssueStateForWorkspace(ctx, workspaceID, issue.ID, "state-done"); err != nil {

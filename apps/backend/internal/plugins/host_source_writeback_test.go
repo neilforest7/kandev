@@ -30,6 +30,17 @@ type sourceIssueControllerFake struct {
 	readCalls    int
 	apply        func(func() error) (string, error)
 	sends        int
+	commentIDs   []string
+	settle       func(SourceIssueCommentSettlement) (string, error)
+	settles      int
+}
+
+func (f *sourceIssueControllerFake) SettleComment(_ context.Context, input SourceIssueCommentSettlement) (string, error) {
+	if f.settle == nil {
+		return "", &SourceIssueError{Kind: SourceIssueErrorUnsupported}
+	}
+	f.settles++
+	return f.settle(input)
 }
 
 func (f *sourceIssueControllerFake) GetCapabilities(context.Context, string, string) (*pluginsdk.SourceIssueCapabilities, error) {
@@ -42,7 +53,8 @@ func (f *sourceIssueControllerFake) GetCapabilities(context.Context, string, str
 	return &copy, f.readErr
 }
 
-func (f *sourceIssueControllerFake) ApplyWriteback(_ context.Context, _ SourceIssueWritebackInput, beforeSend func() error) (string, error) {
+func (f *sourceIssueControllerFake) ApplyWriteback(_ context.Context, input SourceIssueWritebackInput, beforeSend func() error) (string, error) {
+	f.commentIDs = append(f.commentIDs, input.CommentID)
 	if f.apply != nil {
 		return f.apply(beforeSend)
 	}
@@ -147,6 +159,28 @@ func TestSourceWritebackReceipts(t *testing.T) {
 		unknownReplayReceipt.OperationID != unknownReceipt.OperationID || controller.sends != 2 {
 		t.Fatalf("uncertain source comment replay = result:%+v receipt:%+v sends:%d err:%v", unknownReplay, unknownReplayReceipt, controller.sends, err)
 	}
+	// The comment was sent under its operation id, so a provider that can look
+	// that id up settles the unknown send instead of holding it forever.
+	if sentID := controller.commentIDs[len(controller.commentIDs)-1]; sentID != unknownReceipt.OperationID {
+		t.Fatalf("comment sent under id %q, want operation id %q", sentID, unknownReceipt.OperationID)
+	}
+	controller.settle = func(input SourceIssueCommentSettlement) (string, error) {
+		if input.CommentID != unknownReceipt.OperationID || input.SourceID != "jira-issue-42" || input.Body != uncertain.Body {
+			t.Fatalf("settlement input = %+v", input)
+		}
+		return input.CommentID, nil
+	}
+	settled, settledReceipt, err := manager.Comment(ctx, uncertain)
+	if err != nil || settled == nil || settled.Status != pluginsdk.CommandApplied || settledReceipt == nil ||
+		settledReceipt.State != "completed" || settledReceipt.ProviderReceiptID != unknownReceipt.OperationID ||
+		controller.settles != 1 || controller.sends != 2 {
+		t.Fatalf("settled source comment = result:%+v receipt:%+v settles:%d sends:%d err:%v", settled, settledReceipt, controller.settles, controller.sends, err)
+	}
+	settledReplay, _, err := manager.Comment(ctx, uncertain)
+	if err != nil || settledReplay == nil || settledReplay.Status != pluginsdk.CommandAlreadyApplied || controller.settles != 1 {
+		t.Fatalf("settled source comment replay = result:%+v settles:%d err:%v", settledReplay, controller.settles, err)
+	}
+	controller.settle = nil
 
 	stale := comment
 	stale.RequestID = "source-comment-stale"

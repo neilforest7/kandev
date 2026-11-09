@@ -37,7 +37,8 @@ type pluginJiraSourceService interface {
 type pluginLinearSourceService interface {
 	GetTaskIssueLink(context.Context, string) (*linear.TaskIssueLink, error)
 	GetIssueForWorkspace(context.Context, string, string) (*linear.LinearIssue, error)
-	AddCommentForWorkspace(context.Context, string, string, string) (string, error)
+	AddCommentForWorkspace(context.Context, string, string, string, string) (string, error)
+	GetCommentIssueForWorkspace(context.Context, string, string) (string, error)
 	SetIssueStateForWorkspace(context.Context, string, string, string) error
 }
 
@@ -222,7 +223,7 @@ func pluginJiraWriteErrorIfNeeded(err error) error {
 
 func (c pluginSourceIssueController) applyLinearWriteback(ctx context.Context, current *pluginsdk.SourceIssueCapabilities, input plugins.SourceIssueWritebackInput) (string, error) {
 	if input.Operation == pluginSourceOperationComment {
-		commentID, err := c.linear.AddCommentForWorkspace(ctx, input.WorkspaceID, current.SourceID, input.Body)
+		commentID, err := c.linear.AddCommentForWorkspace(ctx, input.WorkspaceID, current.SourceID, input.Body, input.CommentID)
 		if err != nil {
 			return "", pluginLinearWriteError(err)
 		}
@@ -230,6 +231,42 @@ func (c pluginSourceIssueController) applyLinearWriteback(ctx context.Context, c
 	}
 	err := c.linear.SetIssueStateForWorkspace(ctx, input.WorkspaceID, current.SourceID, input.TargetID)
 	return "", pluginLinearWriteErrorIfNeeded(err)
+}
+
+// SettleComment proves or completes a Linear comment sent under a known id. It
+// sends no precondition read: the write was already admitted and checked, and
+// Linear rejects a second comment with the same id.
+func (c pluginSourceIssueController) SettleComment(ctx context.Context, input plugins.SourceIssueCommentSettlement) (string, error) {
+	if input.Provider != pluginSourceProviderLinear || c.linear == nil || input.CommentID == "" {
+		return "", &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorUnsupported}
+	}
+	found, err := c.linearCommentOnIssue(ctx, input)
+	if err != nil || found {
+		return input.CommentID, err
+	}
+	if _, sendErr := c.linear.AddCommentForWorkspace(ctx, input.WorkspaceID, input.SourceID, input.Body, input.CommentID); sendErr != nil {
+		// A late copy of the original send may have taken the id first.
+		if found, err := c.linearCommentOnIssue(ctx, input); err == nil && found {
+			return input.CommentID, nil
+		}
+		return "", pluginLinearWriteError(sendErr)
+	}
+	return input.CommentID, nil
+}
+
+func (c pluginSourceIssueController) linearCommentOnIssue(ctx context.Context, input plugins.SourceIssueCommentSettlement) (bool, error) {
+	issueID, err := c.linear.GetCommentIssueForWorkspace(ctx, input.WorkspaceID, input.CommentID)
+	var apiErr *linear.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, pluginLinearSourceError(err)
+	}
+	if issueID != input.SourceID {
+		return false, &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorStale}
+	}
+	return true, nil
 }
 
 func pluginLinearWriteErrorIfNeeded(err error) error {
@@ -430,7 +467,18 @@ func pluginProviderReadError(err error, classify func(int) plugins.SourceIssueEr
 	return &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorUnavailable, Cause: err}
 }
 
+// pluginProviderWriteError classifies an error from a provider write that was
+// already sent. Without a provider status the request may have landed (a
+// timeout or reset after the provider accepted it), so it is uncertain.
 func pluginProviderWriteError(err error, classify func(int) plugins.SourceIssueErrorKind, missingCredentials func() bool) error {
+	if errors.Is(err, linear.ErrPluginWritebackUnsupported) {
+		return &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorUnsupported, Cause: err}
+	}
+	var jiraErr *jira.APIError
+	var linearErr *linear.APIError
+	if !missingCredentials() && !errors.As(err, &jiraErr) && !errors.As(err, &linearErr) {
+		return &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorUncertain, Cause: err}
+	}
 	return pluginProviderReadError(err, classify, missingCredentials)
 }
 

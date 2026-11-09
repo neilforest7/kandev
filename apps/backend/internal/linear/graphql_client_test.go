@@ -3,6 +3,7 @@ package linear
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -223,7 +224,7 @@ func TestGraphQLClient_SetIssueState_FailureFlag(t *testing.T) {
 }
 
 func TestGraphQLClient_AddComment(t *testing.T) {
-	var bodyText, issueID string
+	var bodyText, issueID, commentID string
 	ts := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		request := readReq(t, r)
 		query, _ := request["query"].(string)
@@ -234,16 +235,31 @@ func TestGraphQLClient_AddComment(t *testing.T) {
 		input, _ := variables["input"].(map[string]interface{})
 		bodyText, _ = input["body"].(string)
 		issueID, _ = input["issueId"].(string)
+		commentID, _ = input["id"].(string)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"commentCreate":{"success":true,"comment":{"id":"comment-9"}}}}`))
 	})
 	c := pointTo(NewGraphQLClient(&LinearConfig{}, "x"), ts.URL)
-	id, err := c.AddComment(context.Background(), "issue-uuid-9", "Ready for review")
+	id, err := c.AddComment(context.Background(), "issue-uuid-9", "Ready for review", "comment-9")
 	if err != nil {
 		t.Fatalf("AddComment: %v", err)
 	}
-	if id != "comment-9" || issueID != "issue-uuid-9" || bodyText != "Ready for review" {
-		t.Fatalf("comment result/input = id:%q issue:%q body:%q", id, issueID, bodyText)
+	if id != "comment-9" || issueID != "issue-uuid-9" || bodyText != "Ready for review" || commentID != "comment-9" {
+		t.Fatalf("comment result/input = id:%q issue:%q body:%q client id:%q", id, issueID, bodyText, commentID)
+	}
+}
+
+func TestGraphQLClient_GetCommentIssueMapsMissingCommentToNotFound(t *testing.T) {
+	ts := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Linear's real answer for an unknown comment id.
+		_, _ = w.Write([]byte(`{"errors":[{"message":"Entity not found: Comment","extensions":{"type":"invalid input","code":"INPUT_ERROR"}}],"data":null}`))
+	})
+	c := pointTo(NewGraphQLClient(&LinearConfig{}, "x"), ts.URL)
+	_, err := c.GetCommentIssue(context.Background(), "comment-missing")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing comment error = %v, want 404 APIError", err)
 	}
 }
 
