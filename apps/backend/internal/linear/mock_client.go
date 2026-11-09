@@ -40,6 +40,7 @@ type setStateCall struct {
 }
 
 type commentCall struct {
+	ID      string
 	IssueID string
 	Body    string
 }
@@ -118,11 +119,30 @@ func (m *MockClient) SetIssueState(_ context.Context, issueID, stateID string) e
 	return nil
 }
 
-func (m *MockClient) AddComment(_ context.Context, issueID, body string) (string, error) {
+func (m *MockClient) AddComment(_ context.Context, issueID, body, commentID string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.comments = append(m.comments, commentCall{IssueID: issueID, Body: body})
-	return fmt.Sprintf("mock-comment-%d", len(m.comments)), nil
+	if commentID == "" {
+		commentID = fmt.Sprintf("mock-comment-%d", len(m.comments)+1)
+	}
+	for _, existing := range m.comments {
+		if existing.ID == commentID {
+			return "", &APIError{StatusCode: http.StatusBadRequest, Message: "comment id already exists"}
+		}
+	}
+	m.comments = append(m.comments, commentCall{ID: commentID, IssueID: issueID, Body: body})
+	return commentID, nil
+}
+
+func (m *MockClient) GetCommentIssue(_ context.Context, commentID string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, existing := range m.comments {
+		if existing.ID == commentID {
+			return existing.IssueID, nil
+		}
+	}
+	return "", &APIError{StatusCode: http.StatusNotFound, Message: "comment not found: " + commentID}
 }
 
 func (m *MockClient) ListLabels(_ context.Context, teamKey string) ([]LinearLabel, error) {

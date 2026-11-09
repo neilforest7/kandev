@@ -260,6 +260,7 @@ func TestClassifyPluginMoveError(t *testing.T) {
 		{"context canceled", fmt.Errorf("read task: %w", context.Canceled), codes.Canceled, "move task canceled"},
 		{"context deadline", fmt.Errorf("read task: %w", context.DeadlineExceeded), codes.DeadlineExceeded, "move task deadline exceeded"},
 		{"workflow resolution conflict, SEC-001", fmt.Errorf("%w: resolved %q, task is now in %q", taskservice.ErrWorkflowResolutionConflict, "wf-home", "wf-away"), codes.Aborted, "task workflow changed concurrently, retry the move"},
+		{"stale task version, JUP-59", fmt.Errorf("move task-1: %w", repoerrors.ErrTaskVersionConflict), codes.Aborted, "task resource version changed"},
 		{"unmapped error falls back to Internal", errors.New("something unexpected"), codes.Internal, "failed to move task"},
 	}
 	for _, tc := range cases {

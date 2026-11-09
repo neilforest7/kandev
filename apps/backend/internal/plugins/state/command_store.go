@@ -272,6 +272,11 @@ func (s *CommandStore) CompleteWithResultData(ctx context.Context, operationID, 
 	return s.Get(ctx, operationID)
 }
 
+// GetByKey returns the durable intent and receipt admitted under an idempotency key.
+func (s *CommandStore) GetByKey(ctx context.Context, installationID, workspaceID, method, idempotencyKey string) (CommandRecord, error) {
+	return getCommandByKey(ctx, s.ro, installationID, workspaceID, method, idempotencyKey)
+}
+
 // Get returns the durable intent and receipt for operationID.
 func (s *CommandStore) Get(ctx context.Context, operationID string) (CommandRecord, error) {
 	return getCommandByOperation(ctx, s.ro, operationID)

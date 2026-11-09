@@ -60,6 +60,19 @@ func (e *SourceIssueError) Unwrap() error {
 type SourceIssueController interface {
 	GetCapabilities(context.Context, string, string) (*pluginsdk.SourceIssueCapabilities, error)
 	ApplyWriteback(context.Context, SourceIssueWritebackInput, func() error) (string, error)
+	// SettleComment resolves a comment send with an unknown outcome: it returns
+	// the provider comment id when the comment with CommentID exists, otherwise
+	// it re-sends the comment under that same id. Providers that cannot take a
+	// caller-chosen comment id return an error and the send stays uncertain.
+	SettleComment(context.Context, SourceIssueCommentSettlement) (string, error)
+}
+
+type SourceIssueCommentSettlement struct {
+	WorkspaceID string
+	Provider    string
+	SourceID    string
+	CommentID   string
+	Body        string
 }
 
 type SourceIssueWritebackInput struct {
@@ -72,6 +85,9 @@ type SourceIssueWritebackInput struct {
 	ExpectedSourceResourceVersion string
 	Body                          string
 	TargetID                      string
+	// CommentID is the id a provider comment is created under, so an unknown
+	// send can later be looked up and re-sent without a duplicate.
+	CommentID string
 }
 
 type exactSourceIssueWritebackManager struct{ host *pluginHost }
@@ -138,6 +154,15 @@ func (h *pluginHost) applySourceIssueWriteback(
 ) (*pluginsdk.CommandResult, *pluginsdk.SourceIssueWritebackReceipt, error) {
 	authorization, result := h.authorizeSourceWriteback(command, operation)
 	if result != nil {
+		if result.Status == pluginsdk.CommandDenied {
+			// A denial is a definite no-effect only for a command that never ran.
+			// An exact retry of an admitted command (for example after a plugin
+			// upgrade bumped the approval revision) gets its stored outcome instead,
+			// so a write that may already have reached the provider is never re-sent.
+			if replayed, receipt, ok := h.replayAdmittedSourceWriteback(ctx, command, operation); ok {
+				return replayed, receipt, nil
+			}
+		}
 		return result, nil, nil
 	}
 	defer authorization.unlock()
@@ -218,7 +243,10 @@ func (a *sourceWritebackAuthorization) admit(ctx context.Context, command plugin
 	if err != nil {
 		return nil, &pluginsdk.CommandResult{Status: pluginsdk.CommandUnavailable, Reason: "command_admission_unavailable"}, nil
 	}
-	if record.Receipt.State == exactReceiptStateCompleted {
+	// An uncertain comment is not a final outcome: it continues to execution,
+	// where the provider can settle it.
+	if record.Receipt.State == exactReceiptStateCompleted &&
+		(operation != "comment" || record.Receipt.ResultStatus != string(pluginsdk.CommandUncertain)) {
 		return nil, replaySourceWriteback(record), storedSourceWritebackReceipt(ctx, a.store, record.Intent.OperationID)
 	}
 	return &sourceWritebackAdmission{store: a.store, record: record, command: command, operation: operation,
@@ -287,6 +315,11 @@ func resumeSourceWritebackReceipt(ctx context.Context, admission *sourceWritebac
 	if err != nil {
 		return &pluginsdk.CommandResult{Status: pluginsdk.CommandUnavailable, Reason: "source_writeback_receipt_unavailable"}, nil, true
 	}
+	if receipt.State == sourceWritebackStateSending || receipt.State == sourceWritebackStateUncertain {
+		if result, settled, ok := settleSourceComment(ctx, admission, receipt); ok {
+			return result, settled, true
+		}
+	}
 	switch receipt.State {
 	case exactReceiptStateCompleted, sourceWritebackStateUncertain:
 		result, storedReceipt, _ := completeSourceWriteback(ctx, admission.store, admission.record, receipt)
@@ -305,6 +338,34 @@ func resumeSourceWritebackReceipt(ctx context.Context, admission *sourceWritebac
 	}
 }
 
+// settleSourceComment resolves an unknown comment send through the provider.
+// The comment was sent under the operation id as its own id, so a lookup proves
+// whether it landed and a re-send under that id cannot create a duplicate. It
+// reports false when the provider cannot settle; the send then stays uncertain.
+// A replay without a controller (a denied, read-only replay) never settles.
+func settleSourceComment(ctx context.Context, admission *sourceWritebackAdmission, receipt state.SourceWritebackReceipt) (*pluginsdk.CommandResult, *pluginsdk.SourceIssueWritebackReceipt, bool) {
+	if admission.controller == nil || receipt.Operation != "comment" {
+		return nil, nil, false
+	}
+	providerReceiptID, err := admission.controller.SettleComment(ctx, SourceIssueCommentSettlement{
+		WorkspaceID: receipt.WorkspaceID, Provider: receipt.Provider, SourceID: receipt.SourceID,
+		CommentID: receipt.OperationID, Body: admission.command.Body,
+	})
+	if err != nil || providerReceiptID == "" {
+		return nil, nil, false
+	}
+	settled, err := admission.store.SettleSourceWriteback(ctx, receipt.OperationID, providerReceiptID)
+	if err != nil {
+		return &pluginsdk.CommandResult{Status: pluginsdk.CommandUnavailable, Reason: "source_writeback_receipt_unavailable"}, nil, true
+	}
+	record, err := admission.store.Get(ctx, receipt.OperationID)
+	if err != nil {
+		return &pluginsdk.CommandResult{Status: pluginsdk.CommandUnavailable, Reason: "command_receipt_unavailable"},
+			sourceWritebackReceiptFromState(settled), true
+	}
+	return commandResultFromRecord(record), sourceWritebackReceiptFromState(settled), true
+}
+
 func validSourceIssueCapabilities(value *pluginsdk.SourceIssueCapabilities, command pluginsdk.SourceIssueWritebackCommand) bool {
 	return value != nil && value.WorkspaceID == command.WorkspaceID && value.TaskID == command.TaskID &&
 		value.Provider != "" && value.SourceID != "" && value.ResourceVersion != ""
@@ -318,6 +379,9 @@ func (h *pluginHost) sendSourceWriteback(ctx context.Context, admission *sourceW
 		ExpectedTaskResourceVersion:   command.ExpectedTaskResourceVersion,
 		ExpectedSourceResourceVersion: command.ExpectedSourceResourceVersion,
 		Body:                          command.Body, TargetID: command.TargetID,
+	}
+	if admission.operation == "comment" {
+		input.CommentID = admission.record.Intent.OperationID
 	}
 	started := false
 	providerReceiptID, writeErr := admission.controller.ApplyWriteback(ctx, input, func() error {
@@ -504,4 +568,31 @@ func completeSourceWriteback(
 			sourceWritebackReceiptFromState(sourceRecord), nil
 	}
 	return commandResultFromRecord(completed), sourceWritebackReceiptFromState(sourceRecord), nil
+}
+
+// replayAdmittedSourceWriteback settles an exact retry of an already admitted
+// source write from its durable receipts only. It never reads or writes the
+// provider: a write that may have started resolves to its stored outcome, or to
+// UNCERTAIN when it was interrupted mid-send.
+func (h *pluginHost) replayAdmittedSourceWriteback(ctx context.Context, command pluginsdk.SourceIssueWritebackCommand, operation string) (*pluginsdk.CommandResult, *pluginsdk.SourceIssueWritebackReceipt, bool) {
+	store := h.commandStore
+	if store == nil && h.service != nil {
+		store = h.service.exactCommandStoreDep()
+	}
+	if store == nil || h.installationID == "" {
+		return nil, nil, false
+	}
+	digest, err := sourceIssueWritebackDigest(operation, command)
+	if err != nil {
+		return nil, nil, false
+	}
+	record, err := store.GetByKey(ctx, h.installationID, command.WorkspaceID, sourceIssueMethod(operation), command.IdempotencyKey)
+	if err != nil || record.Intent.PayloadDigest != digest {
+		return nil, nil, false
+	}
+	if record.Receipt.State == exactReceiptStateCompleted {
+		return replaySourceWriteback(record), storedSourceWritebackReceipt(ctx, store, record.Intent.OperationID), true
+	}
+	return resumeSourceWritebackReceipt(ctx, &sourceWritebackAdmission{store: store, record: record, command: command,
+		operation: operation, payloadDigest: digest, installationID: h.installationID})
 }

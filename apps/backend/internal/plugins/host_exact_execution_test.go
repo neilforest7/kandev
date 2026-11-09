@@ -104,7 +104,7 @@ func (f *fakeExactExecutionController) SetSessionMode(_ context.Context, install
 	return in.ModeID, nil
 }
 
-func newExactExecutionHost(t *testing.T, controller *fakeExactExecutionController) (*pluginHost, string) {
+func newExactExecutionHost(t *testing.T, controller exactExecutionController) (*pluginHost, string) {
 	t.Helper()
 	connection, err := sqlx.Open("sqlite3", ":memory:")
 	if err != nil {
@@ -314,5 +314,65 @@ func TestExactExecutionResourceVersionValidation(t *testing.T) {
 	valid.ExpectedTaskResourceVersion = "not-a-version"
 	if validTaskRunCommand(valid) {
 		t.Fatal("malformed task version was accepted")
+	}
+}
+
+// blockingExactExecutionController simulates a slow launch (worktree creation,
+// executor startup): EnsureTaskRun blocks until released and, like the real
+// orchestrator/executor path, fails with the context error if the launch
+// context was cancelled while it was running.
+type blockingExactExecutionController struct {
+	fakeExactExecutionController
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingExactExecutionController) EnsureTaskRun(ctx context.Context, _ string, _ pluginsdk.ExactTaskRunCommand) (pluginsdk.ExactTaskRunResult, error) {
+	f.ensureCalls++
+	close(f.entered)
+	<-f.release
+	if err := ctx.Err(); err != nil {
+		return pluginsdk.ExactTaskRunResult{}, err
+	}
+	return pluginsdk.ExactTaskRunResult{SessionID: "session-exact", SessionState: "RUNNING", ExecutionID: "exec-exact"}, nil
+}
+
+// TestExactEnsureTaskRunSurvivesCallerCancel covers JUP-58: the bridge calls
+// EnsureTaskRun with a short HTTP timeout, and the Host used the request
+// context as the launch context, so a slow launch was cancelled and the
+// session went FAILED with "context canceled". Once the command is admitted,
+// the launch must not be cancelled by the caller disconnecting.
+func TestExactEnsureTaskRunSurvivesCallerCancel(t *testing.T) {
+	controller := &blockingExactExecutionController{entered: make(chan struct{}), release: make(chan struct{})}
+	host, digest := newExactExecutionHost(t, controller)
+	manager, ok := pluginsdk.HostExecutionCommands(host)
+	if !ok {
+		t.Fatal("execution commands are not exposed")
+	}
+	ensure := pluginsdk.ExactTaskRunCommand{RequestID: "request-ensure-cancel", WorkspaceID: "workspace-execution", TaskID: "task-exact", IdempotencyKey: "ensure-cancel-1", ExpectedTaskResourceVersion: "2026-09-26T09:00:00Z", ApprovalRevision: 1, ManifestDigest: digest}
+	ensure.ManagementInstanceKey, ensure.ExpectedClaimGeneration = "delivery-lead", 4
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		result *pluginsdk.CommandResult
+		run    pluginsdk.ExactTaskRunResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, run, err := manager.EnsureTaskRun(ctx, ensure)
+		done <- outcome{result, run, err}
+	}()
+	<-controller.entered // admitted; launch in flight
+	cancel()             // caller disconnects (bridge HTTP timeout)
+	close(controller.release)
+
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Status != pluginsdk.CommandApplied || got.run.SessionID != "session-exact" {
+			t.Fatalf("ensure after caller cancel = %+v, run=%+v, err=%v; want applied session-exact", got.result, got.run, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("EnsureTaskRun did not return after caller cancel")
 	}
 }

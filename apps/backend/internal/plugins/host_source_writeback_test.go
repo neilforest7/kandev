@@ -30,6 +30,17 @@ type sourceIssueControllerFake struct {
 	readCalls    int
 	apply        func(func() error) (string, error)
 	sends        int
+	commentIDs   []string
+	settle       func(SourceIssueCommentSettlement) (string, error)
+	settles      int
+}
+
+func (f *sourceIssueControllerFake) SettleComment(_ context.Context, input SourceIssueCommentSettlement) (string, error) {
+	if f.settle == nil {
+		return "", &SourceIssueError{Kind: SourceIssueErrorUnsupported}
+	}
+	f.settles++
+	return f.settle(input)
 }
 
 func (f *sourceIssueControllerFake) GetCapabilities(context.Context, string, string) (*pluginsdk.SourceIssueCapabilities, error) {
@@ -42,7 +53,8 @@ func (f *sourceIssueControllerFake) GetCapabilities(context.Context, string, str
 	return &copy, f.readErr
 }
 
-func (f *sourceIssueControllerFake) ApplyWriteback(_ context.Context, _ SourceIssueWritebackInput, beforeSend func() error) (string, error) {
+func (f *sourceIssueControllerFake) ApplyWriteback(_ context.Context, input SourceIssueWritebackInput, beforeSend func() error) (string, error) {
+	f.commentIDs = append(f.commentIDs, input.CommentID)
 	if f.apply != nil {
 		return f.apply(beforeSend)
 	}
@@ -147,6 +159,28 @@ func TestSourceWritebackReceipts(t *testing.T) {
 		unknownReplayReceipt.OperationID != unknownReceipt.OperationID || controller.sends != 2 {
 		t.Fatalf("uncertain source comment replay = result:%+v receipt:%+v sends:%d err:%v", unknownReplay, unknownReplayReceipt, controller.sends, err)
 	}
+	// The comment was sent under its operation id, so a provider that can look
+	// that id up settles the unknown send instead of holding it forever.
+	if sentID := controller.commentIDs[len(controller.commentIDs)-1]; sentID != unknownReceipt.OperationID {
+		t.Fatalf("comment sent under id %q, want operation id %q", sentID, unknownReceipt.OperationID)
+	}
+	controller.settle = func(input SourceIssueCommentSettlement) (string, error) {
+		if input.CommentID != unknownReceipt.OperationID || input.SourceID != "jira-issue-42" || input.Body != uncertain.Body {
+			t.Fatalf("settlement input = %+v", input)
+		}
+		return input.CommentID, nil
+	}
+	settled, settledReceipt, err := manager.Comment(ctx, uncertain)
+	if err != nil || settled == nil || settled.Status != pluginsdk.CommandApplied || settledReceipt == nil ||
+		settledReceipt.State != "completed" || settledReceipt.ProviderReceiptID != unknownReceipt.OperationID ||
+		controller.settles != 1 || controller.sends != 2 {
+		t.Fatalf("settled source comment = result:%+v receipt:%+v settles:%d sends:%d err:%v", settled, settledReceipt, controller.settles, controller.sends, err)
+	}
+	settledReplay, _, err := manager.Comment(ctx, uncertain)
+	if err != nil || settledReplay == nil || settledReplay.Status != pluginsdk.CommandAlreadyApplied || controller.settles != 1 {
+		t.Fatalf("settled source comment replay = result:%+v settles:%d err:%v", settledReplay, controller.settles, err)
+	}
+	controller.settle = nil
 
 	stale := comment
 	stale.RequestID = "source-comment-stale"
@@ -221,5 +255,51 @@ func TestSourceWritebackReceipts(t *testing.T) {
 		restartReceipt == nil || restartReceipt.State != "uncertain" || controller.readCalls != readsBeforeReplay || controller.sends != 3 {
 		t.Fatalf("recovered in-flight source write = result:%+v receipt:%+v reads:%d sends:%d err:%v",
 			uncertainAfterRestart, restartReceipt, controller.readCalls, controller.sends, err)
+	}
+
+	// A plugin upgrade bumps the approval revision while a write is in flight.
+	// The exact retry under the old revision gets the stored outcome, not a
+	// denial the plugin would read as "never happened" and re-send.
+	inFlight := comment
+	inFlight.RequestID = "source-comment-upgrade"
+	inFlight.IdempotencyKey = "source-comment-upgrade-1"
+	inFlightDigest, err := sourceIssueWritebackDigest("comment", inFlight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlightRecord, _, err := reopenedStore.Admit(ctx, state.CommandIntent{
+		InstallationID: record.InstallationID, WorkspaceID: workspaceID, RequestID: inFlight.RequestID,
+		IdempotencyKey: inFlight.IdempotencyKey, Method: exactSourceIssueCommentMethod,
+		CapabilityID: "host.v2.write:source_issues", PayloadDigest: inFlightDigest, TargetID: inFlight.TaskID,
+		ExpectedResourceVersion: inFlight.ExpectedTaskResourceVersion + "/" + inFlight.ExpectedSourceResourceVersion,
+		ApprovalRevision:        inFlight.ApprovalRevision, ManifestDigest: inFlight.ManifestDigest,
+	})
+	if err != nil {
+		t.Fatalf("admit in-flight source write: %v", err)
+	}
+	inFlightPrepared, _, err := reopenedStore.PrepareSourceWriteback(ctx, state.SourceWritebackIntent{
+		OperationID: inFlightRecord.Intent.OperationID, InstallationID: record.InstallationID,
+		WorkspaceID: workspaceID, TaskID: inFlight.TaskID, Provider: "jira", SourceID: "jira-issue-42",
+		Operation: "comment", ExpectedSourceVersion: inFlight.ExpectedSourceResourceVersion, PayloadDigest: inFlightDigest,
+	})
+	if err != nil {
+		t.Fatalf("prepare in-flight source write: %v", err)
+	}
+	if _, started, err := reopenedStore.StartSourceWriteback(ctx, inFlightPrepared.OperationID); err != nil || !started {
+		t.Fatalf("start in-flight source write = started %v, err %v", started, err)
+	}
+	if _, err := svc.approvalGrant(record.InstallationID, workspaceID, 2, ManifestCapabilityDigest(record.Manifest),
+		[]string{"host.v2.read:source_issues", "host.v2.write:source_issues"}, "human", "grant", "source-writeback-approval-2"); err != nil {
+		t.Fatalf("re-grant source issue capabilities: %v", err)
+	}
+	upgraded, upgradedReceipt, err := manager.Comment(ctx, inFlight)
+	if err != nil || upgraded == nil || upgraded.Status != pluginsdk.CommandUncertain || upgradedReceipt == nil ||
+		upgradedReceipt.OperationID != inFlightRecord.Intent.OperationID || controller.sends != 3 {
+		t.Fatalf("in-flight write after upgrade = result:%+v receipt:%+v sends:%d err:%v", upgraded, upgradedReceipt, controller.sends, err)
+	}
+	fresh := inFlight
+	fresh.IdempotencyKey = "source-comment-upgrade-new"
+	if denied, _, err := manager.Comment(ctx, fresh); err != nil || denied == nil || denied.Status != pluginsdk.CommandDenied || controller.sends != 3 {
+		t.Fatalf("new write under a stale revision = result:%+v sends:%d err:%v", denied, controller.sends, err)
 	}
 }

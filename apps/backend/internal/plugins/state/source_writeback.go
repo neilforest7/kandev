@@ -29,7 +29,8 @@ type SourceWritebackIntent struct {
 
 // SourceWritebackReceipt records the provider effect lifecycle and its
 // host-owned source subject. A sending receipt without a final result is
-// treated as uncertain after restart and is never sent again automatically.
+// treated as uncertain after restart. Only a provider that can prove the
+// outcome (a comment with a host-chosen id) is settled and re-sent.
 type SourceWritebackReceipt struct {
 	SourceWritebackIntent
 	ReceiptID         string `db:"receipt_id"`
@@ -153,6 +154,47 @@ func (s *CommandStore) FinishSourceWriteback(ctx context.Context, operationID, r
 		return SourceWritebackReceipt{}, ErrSourceWritebackConflict
 	}
 	return receipt, nil
+}
+
+// SettleSourceWriteback records that the provider has proven an unknown send
+// applied. Only a sending or uncertain receipt can move, together with its
+// command receipt, so a definite result is never rewritten.
+func (s *CommandStore) SettleSourceWriteback(ctx context.Context, operationID, providerReceiptID string) (SourceWritebackReceipt, error) {
+	if strings.TrimSpace(operationID) == "" || strings.TrimSpace(providerReceiptID) == "" {
+		return SourceWritebackReceipt{}, errors.New("plugin source writeback: operation id and provider receipt are required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return SourceWritebackReceipt{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, tx.Rebind(`
+		UPDATE plugin_host_source_writeback_receipts
+		SET state = 'completed', result_status = 'APPLIED', reason = '', provider_receipt_id = ?, updated_at = ?
+		WHERE operation_id = ? AND state IN ('sending', 'uncertain')
+	`), providerReceiptID, now, operationID)
+	if err != nil {
+		return SourceWritebackReceipt{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err == nil {
+			err = ErrSourceWritebackConflict
+		}
+		return SourceWritebackReceipt{}, err
+	}
+	if _, err := tx.ExecContext(ctx, tx.Rebind(`
+		UPDATE plugin_host_command_receipts
+		SET state = 'completed', result_status = 'APPLIED', reason = '',
+			target_id = (SELECT source_id FROM plugin_host_source_writeback_receipts WHERE operation_id = ?), updated_at = ?
+		WHERE operation_id = ? AND (state = 'accepted' OR result_status = 'UNCERTAIN')
+	`), operationID, now, operationID); err != nil {
+		return SourceWritebackReceipt{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return SourceWritebackReceipt{}, err
+	}
+	return s.GetSourceWriteback(ctx, operationID)
 }
 
 // GetSourceWriteback returns one durable source issue receipt.

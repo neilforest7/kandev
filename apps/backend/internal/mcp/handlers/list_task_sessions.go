@@ -16,17 +16,43 @@ import (
 // list_task_sessions_kandev. It is deliberately narrower than
 // dto.TaskSessionSummaryDTO: an agent choosing a session to read or message
 // needs identity, role and state — not container IDs, worktree paths, or
-// profile snapshots.
+// profile snapshots. The single exception is the approved plan version
+// under a Linear watch root: the admission gate pins it write-once on the
+// session and no other MCP tool surfaces it, so an agent that must cite it
+// (e.g. in a child task external_id) has no way to learn it without this.
 type taskSessionListEntry struct {
-	SessionID      string                  `json:"session_id"`
-	Name           string                  `json:"name,omitempty"`
-	State          models.TaskSessionState `json:"state"`
-	IsPrimary      bool                    `json:"is_primary"`
-	IsCurrent      bool                    `json:"is_current"`
-	AgentProfileID string                  `json:"agent_profile_id,omitempty"`
-	StartedAt      time.Time               `json:"started_at"`
-	CompletedAt    *time.Time              `json:"completed_at,omitempty"`
-	UpdatedAt      time.Time               `json:"updated_at"`
+	SessionID           string                  `json:"session_id"`
+	Name                string                  `json:"name,omitempty"`
+	State               models.TaskSessionState `json:"state"`
+	IsPrimary           bool                    `json:"is_primary"`
+	IsCurrent           bool                    `json:"is_current"`
+	AgentProfileID      string                  `json:"agent_profile_id,omitempty"`
+	ApprovedPlanVersion string                  `json:"approved_plan_version,omitempty"`
+	StartedAt           time.Time               `json:"started_at"`
+	CompletedAt         *time.Time              `json:"completed_at,omitempty"`
+	UpdatedAt           time.Time               `json:"updated_at"`
+}
+
+// approvedPlanVersion reads the PlanVersion of the gate's write-once pin
+// (models.SessionMetaKeyLinearExecutionPin) on one session. Only the version
+// is surfaced; profile and approval identity stay host-side. A missing or
+// malformed pin yields "" — never an error, so listing sessions cannot fail
+// because one session was never admitted.
+func approvedPlanVersion(session *models.TaskSession) string {
+	if session == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(session.Metadata[models.SessionMetaKeyLinearExecutionPin])
+	if err != nil {
+		return ""
+	}
+	var pin struct {
+		PlanVersion string `json:"planVersion"`
+	}
+	if err := json.Unmarshal(encoded, &pin); err != nil {
+		return ""
+	}
+	return pin.PlanVersion
 }
 
 type listTaskSessionsRequest struct {
@@ -80,15 +106,16 @@ func (h *Handlers) handleListTaskSessions(ctx context.Context, msg *ws.Message) 
 	entries := make([]taskSessionListEntry, 0, len(sessions))
 	for _, session := range sessions {
 		entries = append(entries, taskSessionListEntry{
-			SessionID:      session.ID,
-			Name:           session.Name,
-			State:          session.State,
-			IsPrimary:      session.IsPrimary,
-			IsCurrent:      req.CurrentSessionID != "" && session.ID == req.CurrentSessionID,
-			AgentProfileID: session.AgentProfileID,
-			StartedAt:      session.StartedAt,
-			CompletedAt:    session.CompletedAt,
-			UpdatedAt:      session.UpdatedAt,
+			SessionID:           session.ID,
+			Name:                session.Name,
+			State:               session.State,
+			IsPrimary:           session.IsPrimary,
+			IsCurrent:           req.CurrentSessionID != "" && session.ID == req.CurrentSessionID,
+			AgentProfileID:      session.AgentProfileID,
+			ApprovedPlanVersion: approvedPlanVersion(session),
+			StartedAt:           session.StartedAt,
+			CompletedAt:         session.CompletedAt,
+			UpdatedAt:           session.UpdatedAt,
 		})
 	}
 

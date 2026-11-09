@@ -482,8 +482,10 @@ func (c *GraphQLClient) SetIssueState(ctx context.Context, issueID, stateID stri
 	return nil
 }
 
-// AddComment adds a Markdown comment to a Linear issue and returns its ID.
-func (c *GraphQLClient) AddComment(ctx context.Context, issueID, body string) (string, error) {
+// AddComment adds a Markdown comment to a Linear issue and returns its ID. A
+// non-empty commentID is sent as the comment's own id, so a resend after an
+// unknown outcome can never create a second comment.
+func (c *GraphQLClient) AddComment(ctx context.Context, issueID, body, commentID string) (string, error) {
 	var data struct {
 		CommentCreate struct {
 			Success bool `json:"success"`
@@ -492,14 +494,53 @@ func (c *GraphQLClient) AddComment(ctx context.Context, issueID, body string) (s
 			} `json:"comment"`
 		} `json:"commentCreate"`
 	}
-	vars := map[string]interface{}{"input": map[string]interface{}{"issueId": issueID, "body": body}}
-	if err := c.do(ctx, addCommentMutation, vars, &data); err != nil {
+	input := map[string]interface{}{"issueId": issueID, "body": body}
+	if commentID != "" {
+		input["id"] = commentID
+	}
+	if err := c.do(ctx, addCommentMutation, map[string]interface{}{"input": input}, &data); err != nil {
 		return "", err
 	}
 	if !data.CommentCreate.Success {
 		return "", &APIError{StatusCode: http.StatusInternalServerError, Message: "commentCreate returned success=false"}
 	}
 	return data.CommentCreate.Comment.ID, nil
+}
+
+const commentByIDQuery = `
+query Comment($id: String!) {
+	comment(id: $id) {
+		id
+		issue { id }
+	}
+}`
+
+// GetCommentIssue returns the issue id that holds commentID. A missing comment
+// is a 404 *APIError (Linear answers "Entity not found: Comment").
+func (c *GraphQLClient) GetCommentIssue(ctx context.Context, commentID string) (string, error) {
+	var data struct {
+		Comment *struct {
+			ID    string `json:"id"`
+			Issue *struct {
+				ID string `json:"id"`
+			} `json:"issue"`
+		} `json:"comment"`
+	}
+	err := c.do(ctx, commentByIDQuery, map[string]interface{}{"id": commentID}, &data)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && strings.HasPrefix(apiErr.Message, "Entity not found") {
+		return "", &APIError{StatusCode: http.StatusNotFound, Message: "comment not found: " + commentID}
+	}
+	if err != nil {
+		return "", err
+	}
+	if data.Comment == nil {
+		return "", &APIError{StatusCode: http.StatusNotFound, Message: "comment not found: " + commentID}
+	}
+	if data.Comment.Issue == nil {
+		return "", nil
+	}
+	return data.Comment.Issue.ID, nil
 }
 
 // --- search ---
