@@ -2,11 +2,16 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/kandev/kandev/internal/agent/mcpconfig"
 	"github.com/kandev/kandev/internal/agentctl/acpcompat"
 	"github.com/kandev/kandev/internal/agentctl/server/adapter/transport/shared"
 	"github.com/kandev/kandev/internal/agentctl/sessionmodel"
@@ -179,6 +184,11 @@ func (a *Adapter) newSession(ctx context.Context, mcpServers []types.McpServer) 
 
 	ctx, span := shared.TraceProtocolRequest(ctx, shared.ProtocolACP, a.agentID, "session.new")
 	defer span.End()
+	deliveredServers, deliveryErr := piProjectMCPDelivery(a.cfg.WorkDir, a.cfg.AgentID, mcpServers)
+	if deliveryErr != nil {
+		return "", deliveryErr
+	}
+	mcpServers = deliveredServers
 
 	caps := effectiveMcpCapabilities(a.capabilities.McpCapabilities, a.cfg)
 	filteredServers, decisions := filterMcpServersWithDecisions(mcpServers, caps, a.logger)
@@ -637,6 +647,11 @@ func (a *Adapter) LoadSession(ctx context.Context, sessionID string, mcpServers 
 	ctx, span := shared.TraceProtocolRequest(ctx, shared.ProtocolACP, a.agentID, "session.restore")
 	defer span.End()
 
+	deliveredServers, deliveryErr := piProjectMCPDelivery(a.cfg.WorkDir, a.cfg.AgentID, mcpServers)
+	if deliveryErr != nil {
+		return deliveryErr
+	}
+	mcpServers = deliveredServers
 	// Filter MCP servers by agent capabilities (same logic as NewSession).
 	caps := effectiveMcpCapabilities(a.capabilities.McpCapabilities, a.cfg)
 	filteredServers, decisions := filterMcpServersWithDecisions(mcpServers, caps, a.logger)
@@ -797,6 +812,11 @@ func (a *Adapter) ResumeSession(ctx context.Context, sessionID string, mcpServer
 	if !supportsResume {
 		return fmt.Errorf("agent does not support session resume (resume capability is false)")
 	}
+	deliveredServers, deliveryErr := piProjectMCPDelivery(a.cfg.WorkDir, a.cfg.AgentID, mcpServers)
+	if deliveryErr != nil {
+		return deliveryErr
+	}
+	mcpServers = deliveredServers
 	caps := effectiveMcpCapabilities(a.capabilities.McpCapabilities, a.cfg)
 	filteredServers, decisions := filterMcpServersWithDecisions(mcpServers, caps, a.logger)
 	if err := requireBuiltinMCPDelivery(mcpServers, filteredServers); err != nil {
@@ -1978,4 +1998,70 @@ func (a *Adapter) Authenticate(ctx context.Context, methodID string) error {
 		return fmt.Errorf("authenticate failed: %w", err)
 	}
 	return nil
+}
+
+// pi-acp ignores ACP MCP parameters; Pi loads the host-generated project file.
+func piProjectMCPDelivery(workDir, agentID string, requested []types.McpServer) ([]types.McpServer, error) {
+	if agentID != "pi-acp" || len(requested) == 0 {
+		return requested, nil
+	}
+	if workDir == "" {
+		return nil, fmt.Errorf("pi project MCP delivery: work directory is required")
+	}
+	expectedServers := make([]types.McpServer, 0, len(requested))
+	for _, server := range requested {
+		if server.Type != "sse" {
+			expectedServers = append(expectedServers, server)
+			continue
+		}
+		hasNonSSE := false
+		for _, other := range requested {
+			if other.Name == server.Name && other.Type != "sse" {
+				hasNonSSE = true
+				break
+			}
+		}
+		if !hasNonSSE {
+			return nil, fmt.Errorf("pi project MCP delivery: server %q has no non-SSE transport", server.Name)
+		}
+	}
+	artifacts, err := (mcpconfig.PiStrategy{}).BuildPassthroughMCP(expectedServers, mcpconfig.PassthroughPaths{WorkspaceDir: workDir})
+	if err != nil {
+		return nil, fmt.Errorf("pi project MCP delivery: build expected file: %w", err)
+	}
+	if len(artifacts.Files) != 1 {
+		return nil, fmt.Errorf("pi project MCP delivery requires one project file")
+	}
+	expectedPath := filepath.Join(workDir, ".pi", "mcp.json")
+	if filepath.Clean(artifacts.Files[0].Path) != filepath.Clean(expectedPath) {
+		return nil, fmt.Errorf("pi project MCP delivery: unexpected path %q", artifacts.Files[0].Path)
+	}
+	actualBytes, err := os.ReadFile(expectedPath)
+	if err != nil {
+		return nil, fmt.Errorf("pi project MCP delivery: read materialized file: %w", err)
+	}
+	type projectFile struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	var expected, actual projectFile
+	if err := json.Unmarshal(artifacts.Files[0].Content, &expected); err != nil {
+		return nil, fmt.Errorf("pi project MCP delivery: decode expected file: %w", err)
+	}
+	if err := json.Unmarshal(actualBytes, &actual); err != nil {
+		return nil, fmt.Errorf("pi project MCP delivery: decode materialized file: %w", err)
+	}
+	if len(expected.MCPServers) == 0 || len(actual.MCPServers) != len(expected.MCPServers) {
+		return nil, fmt.Errorf("pi project MCP delivery: materialized servers do not match the approved set")
+	}
+	for name, expectedRaw := range expected.MCPServers {
+		actualRaw, ok := actual.MCPServers[name]
+		if !ok {
+			return nil, fmt.Errorf("pi project MCP delivery: missing server %q", name)
+		}
+		var expectedValue, actualValue any
+		if err := json.Unmarshal(expectedRaw, &expectedValue); err != nil || json.Unmarshal(actualRaw, &actualValue) != nil || !reflect.DeepEqual(expectedValue, actualValue) {
+			return nil, fmt.Errorf("pi project MCP delivery: server %q does not match the approved configuration", name)
+		}
+	}
+	return nil, nil
 }

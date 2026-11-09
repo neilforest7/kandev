@@ -57,6 +57,7 @@ type taskLaunchRecoveryTaskService interface {
 	UpdateRepositoryBaseBranchFromSystem(context.Context, taskservice.UpdateRepositoryBaseBranchRequest) (*models.TaskRepository, error)
 	ListBranches(context.Context, string, string) ([]taskservice.Branch, error)
 	MoveTaskWithOptions(context.Context, string, string, string, int, taskservice.MoveTaskOptions) (*taskservice.MoveTaskResult, error)
+	UpdateTaskStateIfCurrentIn(context.Context, string, v1.TaskState, []v1.TaskState) (bool, error)
 }
 
 type taskLaunchRecoveryRepository interface {
@@ -537,7 +538,9 @@ func (s *Service) recordTaskUnresolvedDefault(
 
 func (s *Service) relaunchRecoveredTask(ctx context.Context, req *TaskLaunchRecoveryRequest, source *taskLaunchRecoverySource) (string, error) {
 	if source.sessionOwned {
-		response, err := s.RecoverSession(ctx, req.TaskID, source.session.ID, "fresh_start")
+		// Only an explicitly authorized failed-root retry takes the reserving
+		// path; every other session-owned recovery keeps its existing behavior.
+		response, err := s.recoverOwnedSessionRetry(ctx, req, source)
 		if err != nil {
 			return "", err
 		}
@@ -563,6 +566,55 @@ func (s *Service) relaunchRecoveredTask(ctx context.Context, req *TaskLaunchReco
 		return "", nil
 	}
 	return response.SessionID, nil
+}
+
+// recoverOwnedSessionRetry selects the reserving retry path only for the
+// explicit retry_launch of a task root the operator saw as FAILED.
+func (s *Service) recoverOwnedSessionRetry(ctx context.Context, req *TaskLaunchRecoveryRequest, source *taskLaunchRecoverySource) (*LaunchSessionResponse, error) {
+	if req.Action == taskLaunchRecoveryRetryLaunch && source.task != nil && source.task.State == v1.TaskStateFailed {
+		return s.RecoverFailedTaskRoot(ctx, req.TaskID, source.session.ID, "fresh_start", req.ErrorStamp)
+	}
+	return s.RecoverSession(ctx, req.TaskID, source.session.ID, "fresh_start", req.ErrorStamp)
+}
+
+// reactivateFailedTaskForRetry reserves the SAME root for the explicit operator
+// retry. The intermediate SCHEDULING state is what startTask uses, so the
+// execution gate sees a live source and the existing agent-start promotion
+// still owns IN_PROGRESS. A canceled, archived or concurrently re-stated task
+// is never overwritten: the transition is a CAS from FAILED only.
+func (s *Service) reactivateFailedTaskForRetry(ctx context.Context, taskID string, task *models.Task) (bool, error) {
+	if task == nil {
+		return false, errors.New("task launch recovery source is unavailable")
+	}
+	if task.State != v1.TaskStateFailed || task.ArchivedAt != nil {
+		return false, fmt.Errorf("task %q is no longer failed; the explicit retry cannot reserve it", taskID)
+	}
+	if s.taskLaunchRecoveryTasks == nil {
+		return false, errors.New("task launch recovery service is unavailable")
+	}
+	reactivated, err := s.taskLaunchRecoveryTasks.UpdateTaskStateIfCurrentIn(ctx, taskID, v1.TaskStateScheduling, []v1.TaskState{v1.TaskStateFailed})
+	if err != nil {
+		return false, err
+	}
+	if !reactivated {
+		return false, fmt.Errorf("task %q is no longer in a failed state that this retry can reactivate", taskID)
+	}
+	return true, nil
+}
+
+// rollbackRetryReactivation restores FAILED only while the retry still owns the
+// SCHEDULING reservation it created.
+func (s *Service) rollbackRetryReactivation(ctx context.Context, taskID string, reactivated bool) {
+	if !reactivated {
+		return
+	}
+	if s.taskLaunchRecoveryTasks == nil {
+		return
+	}
+	if _, err := s.taskLaunchRecoveryTasks.UpdateTaskStateIfCurrentIn(context.WithoutCancel(ctx), taskID, v1.TaskStateFailed, []v1.TaskState{v1.TaskStateScheduling}); err != nil && s.logger != nil {
+		s.logger.Warn("task launch recovery could not restore the failed state after a failed retry",
+			zap.String("task_id", taskID), zap.Error(err))
+	}
 }
 
 // resetFailedTaskEnvironmentForRecovery removes the unusable environment left

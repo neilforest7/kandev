@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"strings"
 	"time"
@@ -338,4 +339,30 @@ func cloneMetadata(src map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(src))
 	maps.Copy(out, src)
 	return out
+}
+
+// ResolveTaskRuntime resolves the native runtime bucket the launch path would
+// use for this task, before a session or worktree exists. The task's executor
+// profile metadata is authoritative (a watch stores it on the task), and
+// resolveExecutorConfig applies the same profile override the launch path uses.
+func (e *Executor) ResolveTaskRuntime(ctx context.Context, taskID string) (string, error) {
+	if taskID == "" {
+		return "", errors.New("execution runtime requires a task")
+	}
+	task, err := e.repo.GetTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if task == nil {
+		return "", errors.New("execution runtime task is unavailable")
+	}
+	metadata := make(map[string]interface{}, 1)
+	if profileID, _ := task.Metadata[models.MetaKeyExecutorProfileID].(string); strings.TrimSpace(profileID) != "" {
+		metadata[models.MetaKeyExecutorProfileID] = profileID
+	}
+	config := e.resolveExecutorConfig(ctx, "", task.WorkspaceID, metadata)
+	if config.ExecutorType == "" {
+		return "", errors.New("execution runtime is unresolved")
+	}
+	return string(models.ExecutorType(config.ExecutorType).Runtime()), nil
 }

@@ -2,12 +2,14 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	"github.com/kandev/kandev/internal/agent/agents"
 	"github.com/kandev/kandev/internal/agent/mcpconfig"
 	"github.com/kandev/kandev/internal/agentctl/types"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
+	p "github.com/kandev/kandev/internal/mcp/profile"
 	"go.uber.org/zap"
 )
 
@@ -55,15 +57,37 @@ func (m *Manager) prepareExecutionMCP(ctx context.Context, execution *AgentExecu
 	if execution == nil {
 		return &preparedMCPOperation{}, nil
 	}
+	restricted := false
+	if value, ok := execution.metadataValue(p.BuiltinBindingMetadataKey); ok {
+		profile, err := p.ParseBuiltinBindingMetadata(value)
+		if err != nil {
+			return nil, err
+		}
+		restricted = profile.ReadOnly
+	}
 	if m.mcpResolver != nil && execution.WorkspaceID != "" {
 		result, err := m.resolveEffectiveMCPResolution(ctx, mcpconfig.ResolutionContext{WorkspaceID: execution.WorkspaceID, RepositoryIDs: execution.RepositoryIDs, ProfileID: execution.AgentProfileID, TaskID: execution.TaskID, SessionID: execution.SessionID}, execution.AgentProfileID, execution.MetadataSnapshot(), agentConfig, execution.RuntimeName)
 		if err != nil {
 			return nil, err
 		}
-		return prepareMCPResolution(result), nil
+		operation := prepareMCPResolution(result)
+		if err := validateReadOnlyMCPServers(restricted, len(operation.servers)); err != nil {
+			return nil, err
+		}
+		return operation, nil
 	}
 	servers, err := m.resolveMcpServersWithParams(ctx, execution.AgentProfileID, execution.MetadataSnapshot(), agentConfig)
+	if err == nil {
+		err = validateReadOnlyMCPServers(restricted, len(servers))
+	}
 	return &preparedMCPOperation{servers: servers}, err
+}
+
+func validateReadOnlyMCPServers(restricted bool, count int) error {
+	if restricted && count != 0 {
+		return errors.New("read-only sessions cannot attach external MCP servers")
+	}
+	return nil
 }
 
 // context carries only safe metadata, never the servers containing secrets.

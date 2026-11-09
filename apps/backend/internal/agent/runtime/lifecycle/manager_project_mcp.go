@@ -2,13 +2,18 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"go.uber.org/zap"
 
 	"github.com/kandev/kandev/internal/agent/agents"
 	"github.com/kandev/kandev/internal/agent/mcpconfig"
 	agentctltypes "github.com/kandev/kandev/internal/agentctl/types"
+	"github.com/kandev/kandev/internal/agentruntime"
 )
 
 // materializeRuntimeProjectMCP writes project-local MCP config for protocol-mode
@@ -59,7 +64,84 @@ func (m *Manager) materializeRuntimeProjectMCPWithPreparation(
 	if err != nil {
 		return fmt.Errorf("build project MCP config: %w", err)
 	}
-	return m.writePassthroughMCPFiles(ctx, execution, artifacts.Files)
+	if err := m.writePassthroughMCPFiles(ctx, execution, artifacts.Files); err != nil {
+		return err
+	}
+	if _, ok := rt.ProjectMCPStrategy.(mcpconfig.PiStrategy); ok {
+		return ensurePiProjectTrust(ctx, execution)
+	}
+	return nil
+}
+
+// Pi RPC must trust this workspace to load its host-generated project MCP file.
+func ensurePiProjectTrust(ctx context.Context, execution *AgentExecution) error {
+	if execution == nil || execution.RuntimeName != agentruntime.RuntimeStandalone {
+		return fmt.Errorf("pi project trust requires a standalone execution")
+	}
+	env := execution.RuntimeEnvironment()
+	agentDir := ""
+	if env != nil {
+		agentDir = strings.TrimSpace(env["PI_CODING_AGENT_DIR"])
+		if agentDir == "" {
+			if home := strings.TrimSpace(env["HOME"]); home != "" {
+				agentDir = filepath.Join(home, ".pi", "agent")
+			}
+		}
+	}
+	if agentDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("pi project trust: resolve home: %w", err)
+		}
+		agentDir = filepath.Join(home, ".pi", "agent")
+	}
+	workspace := strings.TrimSpace(execution.WorkspacePath)
+	if workspace == "" {
+		return fmt.Errorf("pi project trust: workspace path is required")
+	}
+	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return fmt.Errorf("pi project trust: resolve workspace: %w", err)
+	}
+	canonicalWorkspace, err = filepath.Abs(canonicalWorkspace)
+	if err != nil {
+		return fmt.Errorf("pi project trust: absolute workspace: %w", err)
+	}
+	if !filepath.IsAbs(agentDir) {
+		return fmt.Errorf("pi project trust requires an absolute agent directory")
+	}
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		return fmt.Errorf("pi project trust: create agent directory: %w", err)
+	}
+	trustPath := filepath.Join(agentDir, "trust.json")
+	lockFile, err := acquirePassthroughMCPFileLock(ctx, trustPath)
+	if err != nil {
+		return fmt.Errorf("pi project trust: lock: %w", err)
+	}
+	defer func() { _ = releasePassthroughMCPFileLock(lockFile) }()
+	trusted := map[string]any{}
+	if raw, readErr := os.ReadFile(trustPath); readErr == nil {
+		if err := json.Unmarshal(raw, &trusted); err != nil {
+			return fmt.Errorf("pi project trust: parse existing store: %w", err)
+		}
+		if trusted == nil {
+			return fmt.Errorf("pi project trust: invalid existing store")
+		}
+	} else if !os.IsNotExist(readErr) {
+		return fmt.Errorf("pi project trust: read existing store: %w", readErr)
+	}
+	for key, value := range trusted {
+		if value != true && value != false && value != nil {
+			return fmt.Errorf("pi project trust: invalid existing entry %q", key)
+		}
+	}
+	trusted[canonicalWorkspace] = true
+	content, err := json.MarshalIndent(trusted, "", "  ")
+	if err != nil {
+		return fmt.Errorf("pi project trust: encode store: %w", err)
+	}
+	content = append(content, '\n')
+	return writeAtomicFile(trustPath, content, 0o600)
 }
 
 func (m *Manager) runtimeProjectMCPServers(

@@ -67,6 +67,7 @@ func (a pluginsExactExecutionController) ensureTaskRun(ctx context.Context, in p
 	start := true
 	response, err := a.orchestrator.EnsureSession(ctx, in.TaskID, orchestrator.EnsureSessionOptions{
 		EnsureExecution: true, AutoStart: &start, ActivationSource: orchestrator.LaunchActivationSourceUserAction,
+		ExplicitRun: true,
 	})
 	if err != nil {
 		return pluginsdk.ExactTaskRunResult{}, normalizeExecutionControlError(err)

@@ -23,6 +23,7 @@ import (
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"github.com/kandev/kandev/internal/common/appctx"
 	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/execadmission"
 	"github.com/kandev/kandev/internal/task/models"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 	"go.opentelemetry.io/otel/trace"
@@ -65,6 +66,9 @@ func (e *PendingDispatchedPromptTimeoutError) Error() string {
 // SessionManager handles ACP session initialization and management
 type SessionManager struct {
 	executorAdmission        func(context.Context, string, string, string) (context.Context, error)
+	executionAdmission       func(context.Context, execadmission.Candidate) error
+	admitExecution           func(context.Context, *AgentExecution) error
+	executionScope           func(context.Context, string, string) (bool, error)
 	logger                   *logger.Logger
 	eventPublisher           *EventPublisher
 	streamManager            *StreamManager
@@ -1825,7 +1829,8 @@ func (sm *SessionManager) SendPromptSteerWithDispatchCallback(
 	dispatchOnly bool,
 	onDispatched func(),
 ) (*PromptResult, error) {
-	if err := execution.validateBuiltinIntent(ctx); err != nil {
+	ctx, err := sm.admitExecutorPrompt(ctx, execution)
+	if err != nil {
 		return nil, err
 	}
 	client, releaseClient := execution.AcquireAgentCtlClient()

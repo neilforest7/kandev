@@ -104,6 +104,11 @@ func (m *Manager) StartAgentProcess(ctx context.Context, executionID string) err
 			return err
 		}
 	}
+	// Recovery re-verifies the same pinned binding: the recorded profile when
+	// this process admitted the launch, the resolved native profile otherwise.
+	if err := m.admitRecoveredExecution(ctx, execution); err != nil {
+		return err
+	}
 	if execution.SessionID == "" {
 		return m.startAgentProcess(ctx, executionID)
 	}
@@ -141,6 +146,9 @@ func (m *Manager) startAgentProcess(ctx context.Context, executionID string) (re
 		retErr = wrapBootstrapFailure(execution, retErr)
 	}()
 	if err := m.verifyBuiltinExecution(ctx, execution); err != nil {
+		return err
+	}
+	if err := m.verifyReadOnlyMCPProfile(ctx, execution); err != nil {
 		return err
 	}
 	if err := execution.contextResetAdmissionError(); err != nil {

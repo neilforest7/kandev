@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kandev/kandev/internal/github"
+	"github.com/kandev/kandev/internal/linear"
 )
 
 // serviceTaskStarter adapts Service.StartTask to the coordinator's
@@ -247,5 +248,30 @@ func (s *Service) dispatchOwnedWatcherEvent(ctx context.Context, src WatcherSour
 		s.logger.Warn("watcher executor access denied", zap.Error(err))
 		return
 	}
+	evt, err = watcherRecoveryEvent(ctx, s.getIssueTaskCreator(), evt, request)
+	if err != nil {
+		s.logger.Warn("watcher recovery lookup failed", zap.Error(err))
+		return
+	}
 	s.dispatchWatcherEvent(ctx, src, evt, fields...)
+}
+
+func watcherRecoveryEvent(ctx context.Context, creator IssueTaskCreator, event any, req *IssueTaskRequest) (any, error) {
+	e, ok := event.(*linear.NewLinearIssueEvent)
+	if !ok || e.Issue == nil || !e.Issue.RecoveryPending {
+		return event, nil
+	}
+	finder, ok := creator.(interface {
+		FindExistingIssueTask(context.Context, string, string) (bool, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("watcher recovery lookup unavailable")
+	}
+	found, err := finder.FindExistingIssueTask(ctx, req.WorkspaceID, req.ExternalID)
+	if err != nil || !found {
+		return event, err
+	}
+	copyEvent := *e
+	copyEvent.MaxInflightTasks = nil
+	return &copyEvent, nil
 }

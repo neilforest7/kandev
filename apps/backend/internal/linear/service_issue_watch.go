@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/kandev/kandev/internal/common/securityutil"
@@ -242,12 +243,8 @@ func (s *Service) ResetIssueWatch(ctx context.Context, watchID string) (int, err
 // Concurrency note: callers must tolerate being handed an issue that gets
 // stolen by a concurrent reserver. We query the seen-set and return unseen
 // identifiers, but we do NOT insert the dedup row here — that happens in the
-// orchestrator's ReserveIssueWatchTask via INSERT OR IGNORE. If the manual
-// /trigger endpoint and the poller tick fire for the same watch in quick
-// succession, both calls can see the same identifier as unseen before either
-// has reserved it. The duplicate publish is harmless (the second reserver
-// loses the race and bails) but the goroutine work is wasted. Same pattern as
-// the JIRA watcher.
+// orchestrator's stable task identity. Concurrent or interrupted dispatches
+// may retry an incomplete reservation without creating another task.
 func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*LinearIssue, error) {
 	var admissionErr error
 	ctx, admissionErr = s.executorActorContext(ctx, w.CreatedByUserID, w.ExecutorProfileID, w.WorkspaceID)
@@ -260,11 +257,16 @@ func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*Linear
 	if err != nil {
 		return nil, err
 	}
-	seen, err := s.store.ListSeenIssueIdentifiers(ctx, w.ID)
+	identity, err := client.TestAuth(ctx)
 	if err != nil {
-		s.log.Warn("linear: dedup set fetch failed",
-			zap.String("watch_id", w.ID), zap.Error(err))
-		seen = nil
+		return nil, err
+	}
+	if identity == nil || !identity.OK || identity.OrganizationID == "" {
+		return nil, fmt.Errorf("linear: organization identity unavailable")
+	}
+	seen, out, err := s.recoverIssueWatchReservations(ctx, w, client, identity.OrganizationID)
+	if err != nil {
+		return nil, err
 	}
 	// Page through matches (bounded by maxPages) so the sort below ranks the
 	// whole unseen backlog. Linear only orders by created/updated, so priority
@@ -276,12 +278,11 @@ func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*Linear
 	if w.SortBy == SortByDefault {
 		maxPages = 1
 	}
-	out := make([]*LinearIssue, 0, issueWatchSearchPageSize)
 	pageToken := ""
 	for page := 0; page < maxPages; page++ {
 		res, err := client.SearchIssues(ctx, w.Filter, pageToken, issueWatchSearchPageSize)
 		if err != nil {
-			if page == 0 {
+			if page == 0 && len(out) == 0 {
 				return nil, err
 			}
 			// A canceled/expired context means the poll is being torn down.
@@ -299,9 +300,15 @@ func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*Linear
 		}
 		for i := range res.Issues {
 			issue := res.Issues[i]
-			if _, ok := seen[issue.Identifier]; ok {
+			issue.OrganizationID = identity.OrganizationID
+			id, err := WatchIssueIdentity(issue.OrganizationID, issue.ID)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := seen[id]; ok {
 				continue
 			}
+			seen[id] = struct{}{}
 			out = append(out, &issue)
 		}
 		if res.IsLast || res.NextPageToken == "" {
@@ -317,6 +324,52 @@ func (s *Service) CheckIssueWatch(ctx context.Context, w *IssueWatch) ([]*Linear
 	// Order dispatch so the most important issues win the in-flight slots.
 	sortIssues(out, w.SortBy)
 	return out, nil
+}
+
+func (s *Service) recoverIssueWatchReservations(ctx context.Context, w *IssueWatch, client Client, organizationID string) (map[string]struct{}, []*LinearIssue, error) {
+	reservations, err := s.store.ListIssueWatchReservations(ctx, w.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	seen := make(map[string]struct{}, len(reservations))
+	out := make([]*LinearIssue, 0, issueWatchSearchPageSize)
+	for _, reservation := range reservations {
+		id, issueID, err := reservationIssueIdentity(reservation.ID, w.ID, organizationID)
+		if err != nil {
+			return nil, nil, err
+		}
+		seen[id] = struct{}{}
+		if reservation.TaskID != "" {
+			continue
+		}
+		issue, err := client.GetIssue(ctx, issueID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("linear: recover watch reservation %s: %w", reservation.ID, err)
+		}
+		if issue == nil || issue.ID != issueID || issue.Identifier == "" || issue.URL == "" {
+			return nil, nil, fmt.Errorf("linear: recovered issue does not match reservation %s", reservation.ID)
+		}
+		issue.OrganizationID = organizationID
+		issue.RecoveryPending = true
+		issue.ReservationIdentifier = reservation.IssueIdentifier
+		issue.ReservationURL = reservation.IssueURL
+		issue.ReservationID = reservation.ID
+		out = append(out, issue)
+	}
+	return seen, out, nil
+}
+
+func reservationIssueIdentity(reservationID, watchID, organizationID string) (string, string, error) {
+	parts := strings.SplitN(reservationID, ":", 4)
+	if len(parts) != 4 || parts[0] != "linear" {
+		return "", "", fmt.Errorf("linear: watch reservation %s has no stable issue identity", reservationID)
+	}
+	id, err := WatchIssueIdentity(organizationID, parts[2])
+	generation, generationErr := uuid.Parse(parts[3])
+	if err != nil || generationErr != nil || generation == uuid.Nil || generation.String() == watchID || id+":"+generation.String() != reservationID {
+		return "", "", fmt.Errorf("linear: watch reservation %s has a different organization or invalid identity", reservationID)
+	}
+	return id, parts[2], nil
 }
 
 // attachProjectDescriptions fills ProjectDescription on every issue that

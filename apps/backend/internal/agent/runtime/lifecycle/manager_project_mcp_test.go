@@ -8,19 +8,23 @@ import (
 	"testing"
 
 	"github.com/kandev/kandev/internal/agent/mcpconfig"
+	"github.com/kandev/kandev/internal/agentruntime"
 )
 
 func TestMaterializeRuntimeProjectMCPForPiWritesProjectFile(t *testing.T) {
 	mgr := newTestManager(t)
+	agentDir := t.TempDir()
 	execution := &AgentExecution{
 		ID:             "exec-1",
 		TaskID:         "task-1",
 		SessionID:      "session-1",
 		AgentProfileID: "profile-1",
 		WorkspacePath:  t.TempDir(),
+		RuntimeName:    agentruntime.RuntimeStandalone,
 		metadata:       map[string]interface{}{},
 		standalonePort: 45678,
 	}
+	execution.setRuntimeEnvironment(map[string]string{"PI_CODING_AGENT_DIR": agentDir})
 	agentConfig, ok := mgr.registry.Get("pi-acp")
 	if !ok {
 		t.Fatal("pi-acp agent missing from test registry")
@@ -49,6 +53,21 @@ func TestMaterializeRuntimeProjectMCPForPiWritesProjectFile(t *testing.T) {
 	}
 	if kandev.URL != "http://localhost:45678/mcp" {
 		t.Fatalf("kandev URL = %q", kandev.URL)
+	}
+	canonical, err := filepath.EvalSymlinks(execution.WorkspacePath)
+	if err != nil {
+		t.Fatalf("resolve workspace: %v", err)
+	}
+	trustBytes, err := os.ReadFile(filepath.Join(agentDir, "trust.json"))
+	if err != nil {
+		t.Fatalf("pi trust store not written: %v", err)
+	}
+	var trust map[string]bool
+	if err := json.Unmarshal(trustBytes, &trust); err != nil {
+		t.Fatalf("pi trust store invalid: %v", err)
+	}
+	if len(trust) != 1 || !trust[canonical] {
+		t.Fatalf("pi trust store = %+v, want only %q", trust, canonical)
 	}
 }
 

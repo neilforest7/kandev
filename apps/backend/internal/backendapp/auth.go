@@ -16,7 +16,10 @@ import (
 	"github.com/kandev/kandev/internal/common/config"
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/db"
+	"github.com/kandev/kandev/internal/execadmission"
 	gateways "github.com/kandev/kandev/internal/gateway/websocket"
+	"github.com/kandev/kandev/internal/linear"
+	mcpprofile "github.com/kandev/kandev/internal/mcp/profile"
 	notificationservice "github.com/kandev/kandev/internal/notifications/service"
 	officesqlite "github.com/kandev/kandev/internal/office/repository/sqlite"
 	"github.com/kandev/kandev/internal/org"
@@ -232,9 +235,18 @@ func warnIfExposedWithoutAuth(cfg *config.Config, svc *auth.Service, log *logger
 		zap.Strings("binds", binds))
 }
 
-func wireExecutorAdmission(authSvc *auth.Service, taskSvc *taskservice.Service, manager interface {
-	SetExecutorAdmission(func(context.Context, string, string, string) (context.Context, error))
-}) {
+func wireExecutorAdmission(
+	authSvc *auth.Service,
+	taskSvc *taskservice.Service,
+	manager interface {
+		SetExecutorAdmission(func(context.Context, string, string, string) (context.Context, error))
+		executionAdmissionManager
+	},
+	linearSvc linearSourceLinkProvider,
+	mcpPolicy func(context.Context, string, string) (*mcpprofile.Context, error),
+	homeDir string,
+	log *logger.Logger,
+) {
 	taskSvc.SetExecutorIdentityResolver(func(ctx context.Context, userID string) (authn.Identity, bool) {
 		if authSvc.Mode() == auth.ModeDisabled {
 			return authhttpmw.SyntheticIdentity(), true
@@ -242,4 +254,64 @@ func wireExecutorAdmission(authSvc *auth.Service, taskSvc *taskservice.Service, 
 		return authSvc.IdentityForUser(ctx, userID)
 	})
 	manager.SetExecutorAdmission(taskSvc.PrepareExecutorAdmission)
+	wireExecutionAdmission(taskSvc, manager, linearSvc, mcpPolicy, homeDir, log)
+}
+
+// executionAdmissionManager is the lifecycle surface the admission gate needs.
+type executionAdmissionManager interface {
+	SetExecutionAdmission(func(context.Context, execadmission.Candidate) error)
+	SetExecutionScope(func(context.Context, string, string) (bool, error))
+	SetExecutionMCPPolicyResolver(func(context.Context, string, string) (*mcpprofile.Context, error))
+}
+
+// linearSourceLinkProvider is the host-owned task-to-issue association the
+// admission gate derives organization, issue and workspace from.
+type linearSourceLinkProvider interface {
+	GetTaskIssueLink(context.Context, string) (*linear.TaskIssueLink, error)
+}
+
+// wireExecutionAdmission installs the trusted Linear execution gate. The gate
+// is always installed: a watch execution stays denied without a bridge.
+func wireExecutionAdmission(
+	taskSvc *taskservice.Service,
+	manager executionAdmissionManager,
+	linearSvc linearSourceLinkProvider,
+	mcpPolicy func(context.Context, string, string) (*mcpprofile.Context, error),
+	homeDir string,
+	log *logger.Logger,
+) {
+	var client *execadmission.Client
+	var investigation []string
+	if path := execadmission.DiscoverConfigPath(homeDir); path != "" {
+		cfg, err := execadmission.LoadConfig(path)
+		if err != nil {
+			log.Warn("linear execution approval config is unusable; watch execution stays denied", zap.Error(err))
+		} else if client, err = execadmission.NewClient(cfg); err != nil {
+			log.Warn("linear execution approval bridge is unusable; watch execution stays denied", zap.Error(err))
+		} else {
+			investigation = cfg.InvestigationProfiles
+		}
+	} else {
+		log.Info("no linear execution approval config; watch execution stays denied")
+	}
+	var source func(context.Context, string) (execadmission.NativeSource, error)
+	if linearSvc != nil {
+		source = func(ctx context.Context, taskID string) (execadmission.NativeSource, error) {
+			link, err := linearSvc.GetTaskIssueLink(ctx, taskID)
+			if err != nil {
+				return execadmission.NativeSource{}, err
+			}
+			return execadmission.NativeSource{
+				OrganizationID: link.OrganizationID,
+				IssueID:        link.IssueID,
+				WorkspaceID:    link.WorkspaceID,
+			}, nil
+		}
+	}
+	taskSvc.SetExecutionApproval(client, investigation, source)
+	manager.SetExecutionAdmission(taskSvc.AdmitExecution)
+	manager.SetExecutionScope(taskSvc.LinearExecutionScope)
+	if mcpPolicy != nil {
+		manager.SetExecutionMCPPolicyResolver(mcpPolicy)
+	}
 }

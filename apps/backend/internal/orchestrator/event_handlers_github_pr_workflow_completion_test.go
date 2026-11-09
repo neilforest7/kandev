@@ -30,12 +30,9 @@ func TestRegisteredPRWorkflowCompletionReleasesWatcherCapacity(t *testing.T) {
 			setSessionState(t, ctx, f.repo, prWorkflowSessionID, sessionState)
 			getter := f.svc.workflowStepGetter.(*mockStepGetter)
 			getter.steps["step_done"].CompleteTaskOnEnter = tc.complete
-			task, err := f.repo.GetTask(ctx, prWorkflowTaskID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			task.Metadata = map[string]interface{}{"linear_issue_watch_id": "completion-watch"}
-			if err := f.repo.UpdateTask(ctx, task); err != nil {
+			// Seed the host-owned watch association through the repository's
+			// internal setter; ordinary task updates cannot assign this key.
+			if err := f.repo.SetTaskMetadataKey(ctx, prWorkflowTaskID, models.MetaKeyLinearIssueWatchID, "completion-watch"); err != nil {
 				t.Fatal(err)
 			}
 			registerPRWorkflowFixture(t, f, &prWorkflowFaultRepository{Repository: f.repo})

@@ -465,6 +465,9 @@ func (m *mockRepository) CompletePendingToolCallsForTurn(ctx context.Context, tu
 func (m *mockRepository) ListTurnsBySession(ctx context.Context, sessionID string) ([]*models.Turn, error) {
 	return nil, nil
 }
+func (m *mockRepository) ReadSessionTurnIntervals(ctx context.Context, sessionID string) ([]*models.Turn, string, models.TaskSessionState, map[string]struct{}, error) {
+	return nil, "", "", nil, nil
+}
 func (m *mockRepository) CreateTaskSession(ctx context.Context, session *models.TaskSession) error {
 	return nil
 }

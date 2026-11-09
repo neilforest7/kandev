@@ -2,10 +2,13 @@ package acp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/kandev/kandev/internal/agent/mcpconfig"
 	"github.com/kandev/kandev/internal/agentctl/server/adapter/transport/shared"
 	"github.com/kandev/kandev/internal/agentctl/types"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
@@ -568,4 +571,41 @@ func TestEffectiveMcpCapabilities_AssumeHTTPAndSSE(t *testing.T) {
 	if caps.Http {
 		t.Error("AssumeMcpSse should not affect caps.Http")
 	}
+}
+
+func TestPiProjectMCPDeliveryUsesExactMaterializedFile(t *testing.T) {
+	requested := []types.McpServer{
+		{Name: "kandev", Type: "http", URL: "http://127.0.0.1:45678/mcp"},
+		{Name: "kandev", Type: "sse", URL: "http://127.0.0.1:45678/sse"},
+	}
+	workspace := t.TempDir()
+	paths := mcpconfig.PassthroughPaths{WorkspaceDir: workspace}
+	expected, err := (mcpconfig.PiStrategy{}).BuildPassthroughMCP(requested[:1], paths)
+	require.NoError(t, err)
+	require.Len(t, expected.Files, 1)
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".pi"), 0o700))
+	require.NoError(t, os.WriteFile(expected.Files[0].Path, expected.Files[0].Content, 0o600))
+	a, peer := newSessionResumeAdapter(t, true, true)
+	a.cfg.AgentID = "pi-acp"
+	a.cfg.WorkDir = workspace
+	a.agentID = "pi-acp"
+	a.dialect = newACPDialect("pi-acp")
+	a.capabilities.McpCapabilities = acp.McpCapabilities{}
+	_, err = a.NewSession(t.Context(), requested)
+	require.NoError(t, err)
+	require.Empty(t, peer.newRequest.McpServers, "Pi receives MCP through its project file")
+	require.NoError(t, a.LoadSession(t.Context(), "saved", requested))
+	require.Empty(t, peer.resumeRequest.McpServers)
+	require.NoError(t, a.ResumeSession(t.Context(), "saved", requested))
+	require.Empty(t, peer.resumeRequest.McpServers)
+	delivered, err := piProjectMCPDelivery(workspace, "claude-acp", requested)
+	require.NoError(t, err)
+	require.Equal(t, requested, delivered)
+
+	extra, err := (mcpconfig.PiStrategy{}).BuildPassthroughMCP([]types.McpServer{requested[0], {Name: "extra", Type: "http", URL: "http://127.0.0.1:45678/extra"}}, paths)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(extra.Files[0].Path, extra.Files[0].Content, 0o600))
+	_, err = a.NewSession(t.Context(), requested)
+	require.Error(t, err, "an unexpected project server is not host-approved")
+	require.Equal(t, 1, peer.sessionCounter, "a mismatched file must fail before the RPC")
 }

@@ -710,6 +710,12 @@ func (s *Server) wrapSensitiveHandler(toolName string, handler server.ToolHandle
 
 func (s *Server) wrapHandlerWithArgumentLogging(toolName string, handler server.ToolHandlerFunc, logArguments bool) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		s.mu.RLock()
+		denied := s.profile.ReadOnly && !readOnlyToolAllowed(toolName)
+		s.mu.RUnlock()
+		if denied {
+			return mcp.NewToolResultError("tool unavailable in read-only session"), nil
+		}
 		start := time.Now()
 
 		fields := []zap.Field{zap.String("tool", toolName)}
@@ -841,8 +847,10 @@ func (s *Server) SetMode(mode string) {
 	}
 	s.mode = normalizedMode
 	manifest := s.profile.BuiltinPackages.Clone()
+	readOnly := s.profile.ReadOnly
 	s.profile = mcpprofile.New(surfaceForMode(normalizedMode), capabilities, s.mcpProviders)
 	s.profile.BuiltinPackages = manifest
+	s.profile.ReadOnly = readOnly
 	if normalizedMode == ModeTaskTitlePending {
 		s.profile = s.profile.WithCapability(mcpprofile.CapabilityTaskTitle)
 	} else {
@@ -909,6 +917,7 @@ func (s *Server) SetProfile(profileContext mcpprofile.Context) {
 	defer s.mu.Unlock()
 
 	profileContext = mcpprofile.Normalize(profileContext)
+	profileContext.ReadOnly = profileContext.ReadOnly || s.profile.ReadOnly
 	if s.profile.BuiltinPackages != nil && profileContext.Surface != s.profile.Surface {
 		return
 	}
@@ -951,6 +960,9 @@ func sameCoordinatorToolPolicy(left, right *mcpprofile.CoordinatorToolPolicy) bo
 }
 
 func sameProfile(left, right mcpprofile.Context) bool {
+	if left.ReadOnly != right.ReadOnly {
+		return false
+	}
 	if !reflect.DeepEqual(left.BuiltinPackages, right.BuiltinPackages) {
 		return false
 	}
@@ -1420,12 +1432,29 @@ func (s *Server) registerAgentPermissionTools() {
 // registerTools assembles the selected packages before publishing their views.
 func (s *Server) registerTools() {
 	s.registerContextTools()
-	s.registerPluginTools()
+	if s.profile.ReadOnly {
+		for name := range s.mcpServer.ListTools() {
+			if !readOnlyToolAllowed(name) {
+				s.mcpServer.DeleteTools(name)
+			}
+		}
+	} else {
+		s.registerPluginTools()
+	}
 	s.logger.Info("registered MCP tools",
 		zap.String("mode", s.mode),
 		zap.Int("count", len(s.mcpServer.ListTools())),
 		zap.Bool("disable_ask_question", s.disableAskQuestion))
 	s.rebuildToolArgumentValidators()
+}
+
+func readOnlyToolAllowed(name string) bool {
+	switch name {
+	case "get_task_plan_kandev", "get_task_conversation_kandev", "ask_user_question_kandev":
+		return true
+	default:
+		return false
+	}
 }
 
 // registerAutomationTools retains the fixed automation authority.

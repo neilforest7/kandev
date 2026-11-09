@@ -145,7 +145,7 @@ func TestRunDevBuildVersionAndLaunchesBackendThenWebAndOpensBrowser(t *testing.T
 	if webLabel != "web" {
 		t.Fatalf("web label = %q, want web", webLabel)
 	}
-	if !reflect.DeepEqual(webArgs, []string{"-C", "apps", "--filter", "@kandev/web", "dev"}) {
+	if !reflect.DeepEqual(webArgs, []string{"-C", "apps", "--filter", "@kandev/web", "dev", "--host", "127.0.0.1"}) {
 		t.Fatalf("web args = %v, want the Vite dev command", webArgs)
 	}
 	for _, expected := range []string{

@@ -125,7 +125,7 @@ func (p *Poller) checkIssueWatches(ctx context.Context) {
 		}
 		newIssues, err := p.service.CheckIssueWatch(ctx, w)
 		if err != nil {
-			p.logger.Debug("linear poller: check issue watch failed",
+			p.logger.Warn("linear poller: check issue watch failed",
 				zap.String("watch_id", w.ID), zap.Error(err))
 			continue
 		}

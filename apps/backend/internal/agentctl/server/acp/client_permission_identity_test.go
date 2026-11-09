@@ -75,6 +75,29 @@ func TestRequestPermissionWithoutOptionsCancels(t *testing.T) {
 	}
 }
 
+func TestRequestPermissionRequiresHandler(t *testing.T) {
+	client := NewClient()
+	req := acpsdk.RequestPermissionRequest{
+		SessionId: "session-1",
+		ToolCall:  acpsdk.ToolCallUpdate{ToolCallId: "tool-1"},
+		Options: []acpsdk.PermissionOption{
+			{OptionId: "always", Kind: acpsdk.PermissionOptionKindAllowAlways},
+			{OptionId: "once", Kind: acpsdk.PermissionOptionKindAllowOnce},
+		},
+	}
+	response, err := client.RequestPermission(context.Background(), req)
+	if err != nil || response.Outcome.Cancelled == nil || response.Outcome.Selected != nil {
+		t.Fatalf("without handler: response=%+v err=%v", response.Outcome, err)
+	}
+	client.SetPermissionHandler(func(_ context.Context, _ *types.PermissionRequest) (*types.PermissionResponse, error) {
+		return &types.PermissionResponse{OptionID: "once"}, nil
+	})
+	response, err = client.RequestPermission(context.Background(), req)
+	if err != nil || response.Outcome.Selected == nil || response.Outcome.Selected.OptionId != "once" {
+		t.Fatalf("with handler: response=%+v err=%v", response.Outcome, err)
+	}
+}
+
 func stringPtr(value string) *string { return &value }
 
 func toolKindPtr(value acpsdk.ToolKind) *acpsdk.ToolKind { return &value }

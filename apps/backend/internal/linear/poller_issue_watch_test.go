@@ -93,8 +93,11 @@ func TestPoller_CheckIssueWatches_PublishesNewIssuesOnly(t *testing.T) {
 
 	// Reserve both identifiers to simulate the orchestrator having created tasks.
 	for _, id := range []string{"ENG-1", "ENG-2"} {
-		if _, err := f.store.ReserveIssueWatchTask(ctx, w.ID, id, "https://linear.app/x/issue/"+id); err != nil {
+		if _, err := reserveTestIssueWatchTask(ctx, f.store, w.ID, id, "https://linear.app/x/issue/"+id); err != nil {
 			t.Fatalf("reserve %s: %v", id, err)
+		}
+		if err := assignTestIssueWatchTaskID(ctx, f.store, w.ID, id, "task-"+id); err != nil {
+			t.Fatal(err)
 		}
 	}
 

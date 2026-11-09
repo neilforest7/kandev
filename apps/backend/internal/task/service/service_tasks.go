@@ -2366,6 +2366,11 @@ func (s *Service) validateParentAdmission(ctx context.Context, task *models.Task
 }
 
 func (s *Service) resolveParentWithReader(ctx context.Context, reader taskrepo.TaskHierarchyReader, task *models.Task, parentID string) error {
+	if task.ParentID != parentID {
+		if err := denyUnapprovedLinearWatch(ctx, task.ID, reader.GetTask); err != nil {
+			return err
+		}
+	}
 	return hierarchy.ValidateParent(ctx, reader, task, parentID)
 }
 

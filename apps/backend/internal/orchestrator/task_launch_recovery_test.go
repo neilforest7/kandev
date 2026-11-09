@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,11 @@ type taskLaunchRecoveryServiceFake struct {
 	environment   *models.TaskEnvironment
 	resetErr      error
 	resetCalls    int
+
+	repo       *sqliterepo.Repository
+	stateMu    sync.Mutex
+	states     map[string]v1.TaskState
+	stateCalls []string
 }
 
 type failingTaskSessionErrorBus struct {
@@ -65,6 +71,31 @@ func (f *taskLaunchRecoveryServiceFake) MoveTaskWithOptions(_ context.Context, t
 		return nil, f.moveErr
 	}
 	return &taskservice.MoveTaskResult{Task: &models.Task{ID: taskID, WorkflowID: workflowID, WorkflowStepID: workflowStepID, Position: position}}, nil
+}
+
+func (f *taskLaunchRecoveryServiceFake) UpdateTaskStateIfCurrentIn(ctx context.Context, taskID string, state v1.TaskState, allowed []v1.TaskState) (bool, error) {
+	if f.repo != nil {
+		_, updated, err := f.repo.UpdateTaskStateIfCurrentIn(ctx, taskID, state, allowed)
+		return updated, err
+	}
+	f.stateMu.Lock()
+	defer f.stateMu.Unlock()
+	f.stateCalls = append(f.stateCalls, taskID+"->"+string(state))
+	if f.states == nil {
+		f.states = map[string]v1.TaskState{}
+	}
+	current, known := f.states[taskID]
+	if !known {
+		f.states[taskID] = state
+		return true, nil
+	}
+	for _, candidate := range allowed {
+		if candidate == current {
+			f.states[taskID] = state
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *taskLaunchRecoveryServiceFake) GetTaskEnvironmentByTaskID(context.Context, string) (*models.TaskEnvironment, error) {
@@ -670,5 +701,104 @@ func TestRecoverTaskLaunchRejectsOpenPRWithoutMutation(t *testing.T) {
 	}
 	if len(fake.moveTaskIDs) != 0 {
 		t.Fatalf("open PR caused a move: %#v", fake.moveTaskIDs)
+	}
+}
+
+// A failed root must become runnable BEFORE the execution gate sees it, using
+// the same intermediate SCHEDULING state a first start uses, and must roll back
+// to FAILED when the retry launch fails. Concurrent operator states are safe.
+func TestRetryLaunchReactivatesTheFailedRootBeforeAdmission(t *testing.T) {
+	fake := &taskLaunchRecoveryServiceFake{states: map[string]v1.TaskState{"root": v1.TaskStateFailed}}
+	svc := &Service{taskLaunchRecoveryTasks: fake}
+	root := &models.Task{ID: "root", State: v1.TaskStateFailed}
+
+	reactivated, err := svc.reactivateFailedTaskForRetry(context.Background(), "root", root)
+	if err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if !reactivated {
+		t.Fatal("a failed root must be reserved for the retry")
+	}
+	if got := fake.states["root"]; got != v1.TaskStateScheduling {
+		t.Fatalf("state before admission = %q, want SCHEDULING", got)
+	}
+
+	// The existing agent-start promotion still owns IN_PROGRESS.
+	if _, err := fake.UpdateTaskStateIfCurrentIn(context.Background(), "root", v1.TaskStateInProgress, []v1.TaskState{v1.TaskStateScheduling}); err != nil {
+		t.Fatalf("promotion: %v", err)
+	}
+	if got := fake.states["root"]; got != v1.TaskStateInProgress {
+		t.Fatalf("promoted state = %q, want IN_PROGRESS", got)
+	}
+
+	// A failed retry restores FAILED only from our own SCHEDULING reservation.
+	fake.states["root"] = v1.TaskStateScheduling
+	svc.rollbackRetryReactivation(context.Background(), "root", true)
+	if got := fake.states["root"]; got != v1.TaskStateFailed {
+		t.Fatalf("rollback state = %q, want FAILED", got)
+	}
+
+	// A concurrent operator/user state is never overwritten.
+	fake.states["root"] = v1.TaskStateTODO
+	fake.stateCalls = nil
+	reactivated, err = svc.reactivateFailedTaskForRetry(context.Background(), "root", &models.Task{ID: "root", State: v1.TaskStateFailed})
+	if err == nil {
+		t.Fatal("a concurrent operator state must refuse the retry instead of overwriting it")
+	}
+	if reactivated || fake.states["root"] != v1.TaskStateTODO {
+		t.Fatalf("concurrent state was overwritten: reactivated=%v state=%q", reactivated, fake.states["root"])
+	}
+
+	// A canceled or archived root is never reactivated: the explicit retry
+	// fails closed instead of launching without a reservation.
+	if reactivated, err := svc.reactivateFailedTaskForRetry(context.Background(), "root", &models.Task{ID: "root", State: v1.TaskStateCancelled}); err == nil || reactivated {
+		t.Fatal("a canceled root must stay terminal and refuse the retry")
+	}
+	archived := time.Now().UTC()
+	if reactivated, err := svc.reactivateFailedTaskForRetry(context.Background(), "root", &models.Task{ID: "root", State: v1.TaskStateFailed, ArchivedAt: &archived}); err == nil || reactivated {
+		t.Fatal("an archived root must stay terminal and refuse the retry")
+	}
+}
+
+// A failed session that never reached a provider turn has no stored initial
+// submission, so the fresh start must compose the workflow step prompt with the
+// task instructions once, using the same builder a first start uses.
+func TestFreshStartRecoveryPromptIncludesTheWorkflowStep(t *testing.T) {
+	repo := setupTestRepo(t)
+	steps := newMockStepGetter()
+	steps.steps["step-947"] = &wfmodels.WorkflowStep{
+		ID: "step-947", WorkflowID: "wf-recovery", Position: 0, Name: "Implement",
+		Prompt: "Plan approval labels: approve-plan / revise-plan / stop.\n\n{{task_prompt}}",
+	}
+	svc := createTestService(repo, steps, newMockTaskRepo())
+	taskID := "task-fresh-start"
+	sessionID := "session-fresh-start"
+	if err := repo.CreateTask(context.Background(), &models.Task{
+		ID: taskID, WorkspaceID: "ws-recovery", WorkflowID: "wf-recovery", WorkflowStepID: "step-947",
+		Title: "Issue", Description: "Full task instructions for the agent.",
+		State: v1.TaskStateFailed,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := repo.CreateTaskSession(context.Background(), &models.TaskSession{
+		ID: sessionID, TaskID: taskID, State: models.TaskSessionStateFailed,
+	}); err != nil {
+		t.Fatalf("CreateTaskSession: %v", err)
+	}
+	prompt, err := svc.freshStartRecoveryPrompt(context.Background(), taskID, &models.TaskSession{ID: sessionID, TaskID: taskID})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(prompt, "approve-plan") {
+		t.Fatalf("workflow step prompt missing: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Full task instructions for the agent.") {
+		t.Fatalf("task instructions missing: %q", prompt)
+	}
+	if strings.Count(prompt, "Full task instructions for the agent.") != 1 {
+		t.Fatalf("task instructions duplicated: %q", prompt)
+	}
+	if strings.Count(prompt, "approve-plan") != 1 {
+		t.Fatalf("step prompt duplicated: %q", prompt)
 	}
 }

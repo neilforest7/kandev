@@ -2,7 +2,9 @@ package acp
 
 import (
 	"context"
+	"strings"
 
+	"github.com/kandev/kandev/internal/agentctl/types"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	"go.uber.org/zap"
 )
@@ -36,6 +38,10 @@ func (a *Adapter) handlePermissionRequest(ctx context.Context, req *PermissionRe
 	// waitForActiveToolCall bounds the race window between a SessionUpdate.ToolCall
 	// notification and a same-id request_permission dispatched on separate goroutines.
 	alreadyTracked := a.waitForActiveToolCall(ctx, req.ToolCallID, syntheticToolCallRaceWindow)
+	// A nameless approval inherits only an identity the adapter tracked in this same session.
+	if req.ToolName == nil && req.SessionID != "" {
+		req.ToolName = a.trackedMCPToolName(req.SessionID, req.ToolCallID)
+	}
 	if capacityPermissionTracked {
 		a.capacityPermissionStarted(turn, req.ToolCallID)
 		defer a.capacityPermissionFinished(turn)
@@ -67,4 +73,29 @@ func (a *Adapter) handlePermissionRequest(ctx context.Context, req *PermissionRe
 
 	// Forward directly to handler - types are already compatible
 	return handler(ctx, req)
+}
+
+// trackedMCPToolName returns the canonical name only for an MCP payload tracked under this session and id.
+func (a *Adapter) trackedMCPToolName(sessionID, toolCallID string) *string {
+	if sessionID == "" || toolCallID == "" {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.sessionID != sessionID {
+		return nil
+	}
+	payload := a.activeToolCalls[toolCallID]
+	if payload == nil || !payload.IsMCPTool() || payload.MCPSourceSessionID() != sessionID || payload.Generic() == nil {
+		return nil
+	}
+	server, tool, found := strings.Cut(payload.Generic().Name, "/")
+	if !found || strings.Contains(tool, "/") || strings.TrimSpace(server) == "" || strings.TrimSpace(tool) == "" {
+		return nil
+	}
+	name := "mcp__" + server + "__" + tool
+	if _, _, ok := types.ParseQualifiedMCPToolName(name); !ok {
+		return nil
+	}
+	return &name
 }

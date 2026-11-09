@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -14,6 +17,8 @@ var (
 // TaskIssueLink is the host-owned association between a task and its Linear issue.
 type TaskIssueLink struct {
 	WorkspaceID     string
+	OrganizationID  string
+	IssueID         string
 	IssueIdentifier string
 	IssueURL        string
 }
@@ -28,11 +33,11 @@ func (s *Store) GetTaskIssueLink(ctx context.Context, taskID string) (*TaskIssue
 		return nil, ErrSourceLinkNotFound
 	}
 	rows, err := s.ro.QueryContext(ctx, s.ro.Rebind(`
-		SELECT DISTINCT w.workspace_id, t.issue_identifier, t.issue_url
+		SELECT DISTINCT w.workspace_id, t.issue_identifier, t.issue_url, t.id, t.issue_watch_id
 		FROM linear_issue_watch_tasks t
 		JOIN linear_issue_watches w ON w.id = t.issue_watch_id
 		WHERE t.task_id = ?
-		ORDER BY w.workspace_id, t.issue_identifier, t.issue_url
+		ORDER BY w.workspace_id, t.issue_identifier, t.issue_url, t.id, t.issue_watch_id
 	`), taskID)
 	if err != nil {
 		return nil, err
@@ -42,8 +47,20 @@ func (s *Store) GetTaskIssueLink(ctx context.Context, taskID string) (*TaskIssue
 	var link *TaskIssueLink
 	for rows.Next() {
 		candidate := &TaskIssueLink{}
-		if err := rows.Scan(&candidate.WorkspaceID, &candidate.IssueIdentifier, &candidate.IssueURL); err != nil {
+		var identity, watchID string
+		if err := rows.Scan(&candidate.WorkspaceID, &candidate.IssueIdentifier, &candidate.IssueURL, &identity, &watchID); err != nil {
 			return nil, err
+		}
+		parts := strings.SplitN(identity, ":", 4)
+		if len(parts) == 4 && parts[0] == "linear" {
+			generation, genErr := uuid.Parse(parts[3])
+			if canonical, err := WatchIssueIdentity(parts[1], parts[2]); err == nil && genErr == nil && generation != uuid.Nil && generation.String() != watchID && canonical+":"+generation.String() == identity {
+				candidate.OrganizationID = parts[1]
+				candidate.IssueID = parts[2]
+			}
+		}
+		if strings.HasPrefix(identity, "linear:") && candidate.IssueID == "" {
+			return nil, errors.New("linear: invalid source association identity")
 		}
 		if link != nil {
 			return nil, ErrSourceLinkAmbiguous

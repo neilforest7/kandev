@@ -1402,7 +1402,13 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 
 	acpMcpServers, err := m.resolveMcpServersForLaunch(ctx, reqWithWorktree, agentConfig)
 	if err != nil {
+		if reqWithWorktree.McpProfile != nil && reqWithWorktree.McpProfile.ReadOnly {
+			return nil, nil, nil, fmt.Errorf("resolve read-only MCP servers: %w", err)
+		}
 		m.logger.Warn("failed to resolve MCP servers for launch", zap.Error(err))
+	}
+	if err := validateReadOnlyMCPServers(reqWithWorktree.McpProfile != nil && reqWithWorktree.McpProfile.ReadOnly, len(acpMcpServers)); err != nil {
+		return nil, nil, nil, err
 	}
 
 	var mcpServers []McpServerConfig
@@ -1468,7 +1474,7 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 	// agentctl auto-approve environment variable: only the exact six
 	// coordinator tool names are auto-approved, decided by agentctl's own
 	// mode check (docs/specs/coordinator/system-design/copilot.md#permission-policy).
-	if reqWithWorktree.McpMode == mcpmode.Coordinator {
+	if reqWithWorktree.McpMode == mcpmode.Coordinator || (reqWithWorktree.McpProfile != nil && reqWithWorktree.McpProfile.ReadOnly) {
 		autoApproveOverride = boolPtr(false)
 	}
 
@@ -1907,6 +1913,9 @@ func (m *Manager) Launch(ctx context.Context, req *LaunchRequest) (*AgentExecuti
 	if req == nil {
 		return nil, errors.New("launch request is required")
 	}
+	if err := m.restrictReadOnlyMCPProfile(ctx, req); err != nil {
+		return nil, err
+	}
 	if req.McpProfile != nil && req.McpProfile.BuiltinPackages != nil {
 		if err := m.validateBuiltinOwner(ctx, req.TaskID, req.SessionID, req.WorkspaceID, req.McpProfile); err != nil {
 			return nil, err
@@ -1990,6 +1999,26 @@ func (m *Manager) Launch(ctx context.Context, req *LaunchRequest) (*AgentExecuti
 	return execution, nil
 }
 
+func (m *Manager) restrictReadOnlyMCPProfile(ctx context.Context, req *LaunchRequest) error {
+	if m.profileResolver == nil || executionProfileID(req) == "" {
+		return nil
+	}
+	_, profile, err := m.resolveAgentProfile(ctx, req)
+	if err != nil || profile == nil || profile.Mode != "read-only" {
+		return nil
+	}
+	if req.IsPassthrough || profile.CLIPassthrough {
+		return errors.New("read-only sessions cannot use CLI passthrough")
+	}
+	if req.McpProfile == nil || req.McpProfile.BuiltinPackages == nil {
+		return errors.New("read-only session requires a bound MCP profile")
+	}
+	restricted := mcpprofile.Normalize(*req.McpProfile)
+	restricted.ReadOnly = true
+	req.McpProfile = &restricted
+	return nil
+}
+
 // markAgentStartPending distinguishes a launch that owns an imminent agent
 // start from a workspace-only execution. It happens synchronously before
 // Launch returns so a concurrent resume cannot mistake the registered runtime
@@ -2062,6 +2091,15 @@ func (m *Manager) promoteWorkspaceExecution(ctx context.Context, execution *Agen
 		}
 		if !agentConfig.Enabled() {
 			return nil, fmt.Errorf("agent type %q is disabled", agentTypeName)
+		}
+		// Promotion resolves the same final profile, so the trusted gate runs
+		// again before any command field or MCP provider is promoted.
+		admittedProfile, err := m.admitResolvedLaunch(sharedCtx, req, agentTypeName, profileInfo)
+		if err != nil {
+			return nil, err
+		}
+		if admittedProfile.ID != "" {
+			execution.setMetadataValue(MetadataKeyExecutionAdmissionProfile, admittedProfile)
 		}
 		preferNative := m.preferNativeBinary(agentConfig, execution.RuntimeName, execution.MetadataSnapshot())
 		cmds, err := m.buildAgentCommandWithContext(sharedCtx, req, profileInfo, agentConfig, execution.RuntimeName, preferNative)
@@ -2175,6 +2213,12 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 	if err := validateManagedToolPolicyProvider(req.McpProfile, agentTypeName, agentConfig.Runtime()); err != nil {
 		return nil, err
 	}
+	// The trusted execution gate runs on the final resolved profile, before any
+	// workspace, runtime or subprocess side effect.
+	admittedProfile, err := m.admitResolvedLaunch(ctx, req, agentTypeName, profileInfo)
+	if err != nil {
+		return nil, err
+	}
 
 	// 3. Check if session already has an agent running. A workspace-only
 	// execution created by EnsureWorkspaceExecutionForSession /
@@ -2231,6 +2275,9 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 	if err != nil {
 		m.publishLaunchPrepareCompleted(req, nil, progressRecorder, workspacePath, false, err)
 		return nil, err
+	}
+	if admittedProfile.ID != "" {
+		reqWithWorktree.Metadata = admissionProfileMetadata(reqWithWorktree.Metadata, admittedProfile)
 	}
 	finalEnv, err := m.buildEnvForExecution(ctx, executionID, &reqWithWorktree, agentConfig, profileInfo)
 	if err != nil {

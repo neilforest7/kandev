@@ -886,6 +886,20 @@ const (
 	// TurnMetaKeyCodexNativeTurnID binds a Kandev turn to the native provider
 	// turn required for safe conversation forks. It is backend-only metadata.
 	TurnMetaKeyCodexNativeTurnID = "codex_native_turn_id"
+	// TurnMetaKeyAbandonedUnconfirmed marks a turn closed by AbandonOpenTurns
+	// after it may have reached dispatch. Its real work span is unknown, so
+	// readers must not report the zero-width close as a measured interval.
+	TurnMetaKeyAbandonedUnconfirmed = "abandoned_unconfirmed"
+	// TurnMetaKeyAbandonedNotDispatched marks a turn closed by AbandonOpenTurns
+	// that was provably never dispatched: its prompt reservation was pending
+	// without a durable dispatch attempt and without any message. Its zero span
+	// is authoritative rather than a lost measurement.
+	TurnMetaKeyAbandonedNotDispatched = "abandoned_not_dispatched"
+	// TurnMetaKeyInterrupted marks a turn that a provider interruption closed at
+	// zero width without proving how long it ran. The zero-width close is a
+	// bookkeeping boundary, not a measurement, so execution accounting reports the
+	// span as unknown rather than as a credited zero.
+	TurnMetaKeyInterrupted = "interrupted"
 
 	// SessionMetaKeyCodexForkRequestPrefix names per-request, at-most-once fork
 	// records on the source session. Ambiguous provider responses remain
@@ -2392,6 +2406,45 @@ type Turn struct {
 	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
+// Execution interval states reported by the execution-interval read. They
+// describe how much of a turn is authoritative accounting, not how the turn
+// ended.
+const (
+	// ExecutionIntervalStateActive is a dispatched turn that is still open on a
+	// session that has not reached a terminal state. It bills up to the read's
+	// own clock; readers must not persist that projection.
+	ExecutionIntervalStateActive = "active"
+	// ExecutionIntervalStateClosed is a measured span. Turn closure is
+	// immutable, so these bounds do not change after they are observed.
+	ExecutionIntervalStateClosed = "closed"
+	// ExecutionIntervalStateNotStarted is a reservation that was provably never
+	// dispatched. Its bounded span is zero by construction.
+	ExecutionIntervalStateNotStarted = "not_started"
+	// ExecutionIntervalStateUnknown is a span the server cannot account for.
+	// Readers must treat it as unbilled and unresolved, never as zero work.
+	ExecutionIntervalStateUnknown = "unknown"
+)
+
+// ExecutionInterval is one turn's contribution to a session's active time.
+// EndedAt is nil for active and unknown spans; an unknown span also makes its
+// containing read incomplete.
+type ExecutionInterval struct {
+	TurnID    string
+	StartedAt time.Time
+	EndedAt   *time.Time
+	State     string
+}
+
+// SessionExecutionIntervals is the authoritative per-session interval
+// projection. Complete is false when any interval is unknown, which means the
+// totals are a lower bound rather than a measured value.
+type SessionExecutionIntervals struct {
+	SessionID string
+	TaskID    string
+	Complete  bool
+	Intervals []ExecutionInterval
+}
+
 // ReviewStatus represents the review state of a TaskSession. The zero value
 // (ReviewStatusNone, the empty string) means "no review needed" and serializes
 // out via omitempty, preserving the JSON shape of the legacy *string field.
@@ -2468,6 +2521,21 @@ var AllTaskSessionStates = []TaskSessionState{
 	TaskSessionStateCompleted,
 	TaskSessionStateFailed,
 	TaskSessionStateCancelled,
+}
+
+// AllowsActiveInterval reports whether an open turn on a session in this state
+// can still be billed as active work. It is deliberately a whitelist of the
+// known non-terminal states: a state this build does not recognise must degrade
+// to an unknown interval rather than authoritative credit, so an unrecognised
+// or newly added state is never billable by default.
+func (s TaskSessionState) AllowsActiveInterval() bool {
+	switch s {
+	case TaskSessionStateCreated, TaskSessionStateStarting, TaskSessionStateRunning,
+		TaskSessionStateIdle, TaskSessionStateWaitingForInput:
+		return true
+	default:
+		return false
+	}
 }
 
 // SessionBranchInfo is a lightweight projection of a session with its worktree branch.

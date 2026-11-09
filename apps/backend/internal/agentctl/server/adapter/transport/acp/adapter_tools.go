@@ -143,7 +143,7 @@ func (a *Adapter) convertToolCallUpdateForGeneration(
 	normalizedPayload := a.normalizer.NormalizeToolCall(toolKind, args)
 	if frame, ok := a.dialect.parseMCPToolCall(tc.Meta, tc.RawInput); ok {
 		toolName = frame.name
-		normalizedPayload = streams.NewMCPTool(frame.name, frame.arguments)
+		normalizedPayload = streams.NewMCPTool(sessionID, frame.name, frame.arguments)
 	}
 
 	toolCallID := string(tc.ToolCallId)

@@ -183,7 +183,7 @@ func TestStore_IssueWatch_DeleteCascadesDedupRows(t *testing.T) {
 	if err := store.CreateIssueWatch(ctx, w); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := store.ReserveIssueWatchTask(ctx, w.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil {
+	if _, err := reserveTestIssueWatchTask(ctx, store, w.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestStore_IssueWatch_DeleteCascadesDedupRows(t *testing.T) {
 	if err := store.CreateIssueWatch(ctx, w2); err != nil {
 		t.Fatalf("recreate watch: %v", err)
 	}
-	ok, err := store.ReserveIssueWatchTask(ctx, w2.ID, "ENG-1", "https://linear.app/x/issue/ENG-1")
+	ok, err := reserveTestIssueWatchTask(ctx, store, w2.ID, "ENG-1", "https://linear.app/x/issue/ENG-1")
 	if err != nil {
 		t.Fatalf("re-reserve: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestStore_IssueWatchTask_ReserveDedup(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	first, err := store.ReserveIssueWatchTask(ctx, w.ID, "ENG-7", "https://linear.app/x/issue/ENG-7")
+	first, err := reserveTestIssueWatchTask(ctx, store, w.ID, "ENG-7", "https://linear.app/x/issue/ENG-7")
 	if err != nil {
 		t.Fatalf("first reserve: %v", err)
 	}
@@ -227,19 +227,19 @@ func TestStore_IssueWatchTask_ReserveDedup(t *testing.T) {
 		t.Error("expected first reservation to win")
 	}
 
-	second, err := store.ReserveIssueWatchTask(ctx, w.ID, "ENG-7", "https://linear.app/x/issue/ENG-7")
+	second, err := reserveTestIssueWatchTask(ctx, store, w.ID, "ENG-7", "https://linear.app/x/issue/ENG-7")
 	if err != nil {
 		t.Fatalf("second reserve: %v", err)
 	}
-	if second {
-		t.Error("expected second reservation to lose due to UNIQUE constraint")
+	if !second {
+		t.Error("expected pending reservation to be retried")
 	}
 
-	seen, err := store.ListSeenIssueIdentifiers(ctx, w.ID)
+	seen, err := store.ListIssueWatchReservations(ctx, w.ID)
 	if err != nil {
 		t.Fatalf("list seen: %v", err)
 	}
-	if _, ok := seen["ENG-7"]; !ok {
+	if len(seen) != 1 || seen[0].IssueIdentifier != "ENG-7" {
 		t.Error("expected ENG-7 in seen set after reservation")
 	}
 }
@@ -252,38 +252,15 @@ func TestStore_IssueWatchTask_AssignTaskID(t *testing.T) {
 	if err := store.CreateIssueWatch(ctx, w); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := store.ReserveIssueWatchTask(ctx, w.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil {
+	if _, err := reserveTestIssueWatchTask(ctx, store, w.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if err := store.AssignIssueWatchTaskID(ctx, w.ID, "ENG-1", "task-abc"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, store, w.ID, "ENG-1", "task-abc"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 
-	if err := store.AssignIssueWatchTaskID(ctx, w.ID, "ENG-NOPE", "task-zzz"); err == nil {
+	if err := assignTestIssueWatchTaskID(ctx, store, w.ID, "ENG-NOPE", "task-zzz"); err == nil {
 		t.Error("expected error for missing reservation, got nil")
-	}
-}
-
-func TestStore_IssueWatchTask_Release(t *testing.T) {
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	w := newTestIssueWatch("ws-1")
-	if err := store.CreateIssueWatch(ctx, w); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := store.ReserveIssueWatchTask(ctx, w.ID, "ENG-1", "https://linear.app/x/issue/ENG-1"); err != nil {
-		t.Fatalf("reserve: %v", err)
-	}
-	if err := store.ReleaseIssueWatchTask(ctx, w.ID, "ENG-1"); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-	again, err := store.ReserveIssueWatchTask(ctx, w.ID, "ENG-1", "https://linear.app/x/issue/ENG-1")
-	if err != nil {
-		t.Fatalf("re-reserve: %v", err)
-	}
-	if !again {
-		t.Error("expected reservation to succeed after release")
 	}
 }
 
@@ -301,14 +278,14 @@ func TestStore_IssueWatchTask_ListTaskIDsAndReset(t *testing.T) {
 	// Three reservations; only two get task IDs assigned so the third row
 	// exercises the empty-ID inclusion the reset flow depends on.
 	for _, k := range []string{"ENG-1", "ENG-2", "ENG-3"} {
-		if _, err := store.ReserveIssueWatchTask(ctx, w.ID, k, "https://linear.app/x/issue/"+k); err != nil {
+		if _, err := reserveTestIssueWatchTask(ctx, store, w.ID, k, "https://linear.app/x/issue/"+k); err != nil {
 			t.Fatalf("reserve %s: %v", k, err)
 		}
 	}
-	if err := store.AssignIssueWatchTaskID(ctx, w.ID, "ENG-1", "task-a"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, store, w.ID, "ENG-1", "task-a"); err != nil {
 		t.Fatalf("assign 1: %v", err)
 	}
-	if err := store.AssignIssueWatchTaskID(ctx, w.ID, "ENG-2", "task-b"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, store, w.ID, "ENG-2", "task-b"); err != nil {
 		t.Fatalf("assign 2: %v", err)
 	}
 

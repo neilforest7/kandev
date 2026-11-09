@@ -49,6 +49,7 @@ const (
 // context-specific groups. Providers add provider-specific automation tools.
 type Context struct {
 	Surface           Surface            `json:"surface"`
+	ReadOnly          bool               `json:"read_only,omitempty"`
 	Capabilities      []Capability       `json:"capabilities,omitempty"`
 	Providers         []string           `json:"providers,omitempty"`
 	ManagedToolPolicy *ManagedToolPolicy `json:"managed_tool_policy,omitempty"`
@@ -177,6 +178,7 @@ func (c Context) WithManagedToolPolicy(policy ManagedToolPolicy) Context {
 // canonicalization rules.
 func Normalize(c Context) Context {
 	normalized := New(c.Surface, c.Capabilities, c.Providers)
+	normalized.ReadOnly = c.ReadOnly
 	normalized.BuiltinPackages = c.BuiltinPackages.Clone()
 	if c.ManagedToolPolicy != nil {
 		policy := *c.ManagedToolPolicy

@@ -921,6 +921,32 @@ func (h *TaskHandlers) httpListSessionTurns(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.ListTurnsResponse{Turns: turnDTOs, Total: len(turnDTOs)})
 }
 
+// httpGetSessionExecutionIntervals returns a session's durable active-time
+// intervals. Authorization happens inside the service read, which scopes the
+// caller against the session's task before loading any turn data, so a foreign
+// session and a missing one answer identically.
+func (h *TaskHandlers) httpGetSessionExecutionIntervals(c *gin.Context) {
+	sessionID := c.Param("id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id is required"})
+		return
+	}
+
+	intervals, err := h.service.ListExecutionIntervals(c.Request.Context(), sessionID)
+	if err != nil {
+		if isNotFound(err) {
+			handleNotFound(c, h.logger, err, "task session not found")
+			return
+		}
+		h.logger.Error("failed to read session execution intervals",
+			zap.String("session_id", sessionID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read session execution intervals"})
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.FromSessionExecutionIntervals(intervals))
+}
+
 func (h *TaskHandlers) httpApproveSession(c *gin.Context) {
 	result, err := h.service.ApproveSession(c.Request.Context(), c.Param("id"))
 	if err != nil {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"go.uber.org/zap"
+	"github.com/google/uuid"
 
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/linear"
@@ -39,22 +39,14 @@ func (s *LinearWatcherSource) Reserve(ctx context.Context, evt any) (bool, error
 	if !ok || e == nil || e.Issue == nil {
 		return false, errors.New("linear source: event payload missing or wrong type")
 	}
-	// Match today's reserveLinearIssue: nil service is "fail open".
 	if s.service == nil {
-		return true, nil
+		return false, errors.New("linear source: service unavailable")
 	}
-	return s.service.ReserveIssueWatchTask(ctx, e.IssueWatchID, e.Issue.Identifier, e.Issue.URL)
+	return s.service.ReserveIssueWatchTask(ctx, e.IssueWatchID, e.Issue)
 }
 
-func (s *LinearWatcherSource) Release(ctx context.Context, evt any) {
-	e, ok := evt.(*linear.NewLinearIssueEvent)
-	if !ok || e == nil || e.Issue == nil || s.service == nil {
-		return
-	}
-	if err := s.service.ReleaseIssueWatchTask(ctx, e.IssueWatchID, e.Issue.Identifier); err != nil && s.logger != nil {
-		s.logger.Warn("linear source: release failed",
-			zap.String("identifier", e.Issue.Identifier), zap.Error(err))
-	}
+func (s *LinearWatcherSource) Release(_ context.Context, _ any) {
+	// The reservation survives uncertain creates and is retried using external_id.
 }
 
 func (s *LinearWatcherSource) BuildTaskRequest(evt any) (*IssueTaskRequest, error) {
@@ -62,16 +54,29 @@ func (s *LinearWatcherSource) BuildTaskRequest(evt any) (*IssueTaskRequest, erro
 	if !ok || e == nil || e.Issue == nil {
 		return nil, errors.New("linear source: event payload missing or wrong type")
 	}
+	orgID, err := uuid.Parse(e.Issue.OrganizationID)
+	if err != nil {
+		return nil, errors.New("linear source: invalid organization ID")
+	}
+	issueID, err := uuid.Parse(e.Issue.ID)
+	if err != nil {
+		return nil, errors.New("linear source: invalid issue ID")
+	}
+	identifier, issueURL := e.Issue.Identifier, e.Issue.URL
+	if e.Issue.ReservationIdentifier != "" {
+		identifier, issueURL = e.Issue.ReservationIdentifier, e.Issue.ReservationURL
+	}
 	req := &IssueTaskRequest{
 		WorkspaceID:    e.WorkspaceID,
 		WorkflowID:     e.WorkflowID,
 		WorkflowStepID: e.WorkflowStepID,
 		Title:          fmt.Sprintf("[%s] %s", e.Issue.Identifier, e.Issue.Title),
 		Description:    interpolateLinearPrompt(e.Prompt, e.Issue),
+		ExternalID:     "linear-watch:" + orgID.String() + ":" + issueID.String(),
 		Metadata: map[string]interface{}{
 			linearWatchMetadataKey:          e.IssueWatchID,
-			"linear_issue_identifier":       e.Issue.Identifier,
-			"linear_issue_url":              e.Issue.URL,
+			"linear_issue_identifier":       identifier,
+			"linear_issue_url":              issueURL,
 			"linear_state":                  e.Issue.StateName,
 			"linear_assignee":               e.Issue.AssigneeName,
 			models.MetaKeyAgentProfileID:    e.AgentProfileID,
@@ -94,8 +99,17 @@ func (s *LinearWatcherSource) AttachTaskID(ctx context.Context, evt any, taskID 
 	if !ok || e == nil || e.Issue == nil || s.service == nil {
 		return nil
 	}
-	return s.service.AssignIssueWatchTaskID(ctx, e.IssueWatchID, e.Issue.Identifier, taskID)
+	identifier := e.Issue.Identifier
+	if e.Issue.ReservationIdentifier != "" {
+		identifier = e.Issue.ReservationIdentifier
+	}
+	return s.service.AssignIssueWatchTaskID(ctx, e.IssueWatchID, identifier, e.Issue.ReservationID, taskID)
 }
+
+// A Linear task must not auto-start until Host writeback can resolve its source.
+func (s *LinearWatcherSource) IsTerminalAttachError(error) bool { return true }
+
+func (s *LinearWatcherSource) SuppressWatcherAutoStart() bool { return true }
 
 func (s *LinearWatcherSource) WatchID(evt any) string {
 	e, ok := evt.(*linear.NewLinearIssueEvent)

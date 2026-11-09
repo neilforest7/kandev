@@ -31,6 +31,8 @@ const ReservedExternalIDPrefixCoordinatorProposal = "coordinator-proposal:"
 // by the authenticated Quick Chat creation adapter.
 const ReservedExternalIDPrefixQuickChatCreation = quickchatidentity.ExternalIDPrefix
 
+const ReservedExternalIDPrefixLinearWatch = models.LinearWatchExternalIDPrefix
+
 // NormalizeExternalID applies the spec's validation/normalization rules to a
 // raw caller-supplied external_id, in this exact order — the order is
 // normative, since it decides which error a malformed value produces:
@@ -74,6 +76,7 @@ func refuseReservedExternalIDPrefix(normalized string, allowed bool) error {
 	for _, prefix := range []string{
 		ReservedExternalIDPrefixCoordinatorProposal,
 		ReservedExternalIDPrefixQuickChatCreation,
+		ReservedExternalIDPrefixLinearWatch,
 	} {
 		if strings.HasPrefix(normalized, prefix) {
 			return fmt.Errorf("%w: external_id may not use the reserved prefix %q", ErrExternalIDInvalid, prefix)

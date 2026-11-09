@@ -163,3 +163,28 @@ func (s *Service) loadBuiltinSessionOwner(ctx context.Context, sessionID string)
 	}
 	return task, session, nil
 }
+
+// ExecutionRosterMCPProfile resolves the native MCP policy a session of this
+// task would run with for the given agent profile. The roster query cannot
+// supply grants; they come from the same preparation the launch path uses.
+func (s *Service) ExecutionRosterMCPProfile(ctx context.Context, taskID, profileID string) (*p.Context, error) {
+	if s.executor == nil {
+		return nil, errors.New("execution roster MCP resolver requires an executor")
+	}
+	profile, err := s.executor.PrepareTaskSessionMCPProfile(ctx, taskID, &models.TaskSession{
+		ID: "execution-roster", TaskID: taskID, AgentProfileID: profileID,
+	}, false)
+	if err != nil {
+		return nil, err
+	}
+	return &profile, nil
+}
+
+// ExecutionRosterRuntime resolves the native runtime bucket the launch path
+// would use for this task, including a watch's task-level executor profile.
+func (s *Service) ExecutionRosterRuntime(ctx context.Context, taskID string) (string, error) {
+	if s.executor == nil {
+		return "", errors.New("execution roster runtime resolver requires an executor")
+	}
+	return s.executor.ResolveTaskRuntime(ctx, taskID)
+}

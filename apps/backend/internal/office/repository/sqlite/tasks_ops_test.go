@@ -134,7 +134,7 @@ func TestUpdateTaskPriorityAndProjectID(t *testing.T) {
 func TestUpdateTaskParentID_NormalisesInheritParentWorkspace(t *testing.T) {
 	repo := newSearchTestRepo(t)
 	ctx := context.Background()
-	if _, err := repo.ExecRaw(ctx, `INSERT INTO tasks(id,workspace_id,title) VALUES ('new-parent','ws-1','Parent')`); err != nil {
+	if _, err := repo.ExecRaw(ctx, `INSERT INTO tasks(id,workspace_id,title) VALUES ('new-parent','ws-1','Parent'), ('old-parent','ws-1','Old parent')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -172,9 +172,9 @@ func TestUpdateTaskParentID_NormalisesInheritParentWorkspace(t *testing.T) {
 		t.Errorf("workspace.mode = %q, want new_workspace untouched", mode)
 	}
 
-	// Invalid JSON metadata is left verbatim rather than erroring.
-	if err := repo.UpdateTaskParentID(ctx, "pa-badjson", "new-parent"); err != nil {
-		t.Fatalf("UpdateTaskParentID(pa-badjson): %v", err)
+	// Invalid metadata cannot establish whether a task is guarded.
+	if err := repo.UpdateTaskParentID(ctx, "pa-badjson", "new-parent"); err == nil {
+		t.Fatal("expected invalid metadata to block reparenting")
 	}
 	var raw string
 	if err := repo.ReaderDB().Get(&raw, `SELECT metadata FROM tasks WHERE id = 'pa-badjson'`); err != nil {
@@ -190,6 +190,23 @@ func TestUpdateTaskParentID_NormalisesInheritParentWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "task not found: missing") {
 		t.Errorf("error = %q, want it to name the task", err)
+	}
+}
+
+func TestUpdateTaskParentID_DeniesLinearWatchChild(t *testing.T) {
+	repo := newSearchTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.ExecRaw(ctx, `INSERT INTO tasks(id, workspace_id, parent_id, title, metadata) VALUES
+		('linear-root', 'ws-1', '', 'root', '{"linear_issue_watch_id":"watch"}'),
+		('linear-child', 'ws-1', 'linear-root', 'child', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateTaskParentID(ctx, "linear-child", ""); err == nil {
+		t.Fatal("detaching a Linear watch child must be denied")
+	}
+	child, err := repo.GetTaskByID(ctx, "linear-child")
+	if err != nil || child.ParentID != "linear-root" {
+		t.Fatalf("child parent = %+v, %v", child, err)
 	}
 }
 

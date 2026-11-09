@@ -47,6 +47,7 @@ import (
 	systemsettings "github.com/kandev/kandev/internal/system/settings"
 	taskchanges "github.com/kandev/kandev/internal/task/changes"
 	taskmodels "github.com/kandev/kandev/internal/task/models"
+	"github.com/kandev/kandev/internal/task/repository/repoerrors"
 	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
 	taskservice "github.com/kandev/kandev/internal/task/service"
 	"github.com/kandev/kandev/internal/task/statussummary"
@@ -900,6 +901,14 @@ type issueTaskCreatorAdapter struct {
 	svc *taskservice.Service
 }
 
+func (a *issueTaskCreatorAdapter) FindExistingIssueTask(ctx context.Context, workspaceID, externalID string) (bool, error) {
+	_, err := a.svc.GetTaskByExternalID(ctx, workspaceID, externalID)
+	if errors.Is(err, repoerrors.ErrTaskNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // CreateIssueTask implements orchestrator.IssueTaskCreator.
 func (a *issueTaskCreatorAdapter) CreateIssueTask(ctx context.Context, req *orchestrator.IssueTaskRequest) (*taskmodels.Task, error) {
 	var repos []taskservice.TaskRepositoryInput
@@ -910,15 +919,35 @@ func (a *issueTaskCreatorAdapter) CreateIssueTask(ctx context.Context, req *orch
 		})
 	}
 	result, err := a.svc.CreateTask(ctx, &taskservice.CreateTaskRequest{
-		WorkspaceID:    req.WorkspaceID,
-		WorkflowID:     req.WorkflowID,
-		WorkflowStepID: req.WorkflowStepID,
-		Title:          req.Title,
-		Description:    req.Description,
-		Metadata:       req.Metadata,
-		Repositories:   repos,
+		WorkspaceID:             req.WorkspaceID,
+		WorkflowID:              req.WorkflowID,
+		WorkflowStepID:          req.WorkflowStepID,
+		Title:                   req.Title,
+		Description:             req.Description,
+		Metadata:                req.Metadata,
+		Repositories:            repos,
+		ExternalID:              req.ExternalID,
+		AllowReservedExternalID: req.ExternalID != "",
 	})
 	if err != nil {
+		return nil, err
+	}
+	if req.ExternalID == "" {
+		return result.Task, nil
+	}
+	for _, key := range []string{"linear_issue_watch_id", "linear_issue_identifier", "linear_issue_url"} {
+		got, ok := result.Task.Metadata[key].(string)
+		want, valid := req.Metadata[key].(string)
+		if !ok || !valid || got == "" || got != want {
+			return nil, fmt.Errorf("issue task source association changed")
+		}
+	}
+	if result.Outcome == taskservice.CreateTaskOutcomeCreated {
+		if err := a.svc.MarkLinearWatchCreationComplete(ctx, result.Task.ID, req.ExternalID); err != nil {
+			return nil, err
+		}
+	}
+	if err := a.svc.SettleLinearWatchCreation(ctx, result.Task.ID, req.ExternalID); err != nil {
 		return nil, err
 	}
 	return result.Task, nil
@@ -952,16 +981,12 @@ type linearServiceAdapter struct {
 	svc *linearpkg.Service
 }
 
-func (a *linearServiceAdapter) ReserveIssueWatchTask(ctx context.Context, watchID, identifier, issueURL string) (bool, error) {
-	return a.svc.Store().ReserveIssueWatchTask(ctx, watchID, identifier, issueURL)
+func (a *linearServiceAdapter) ReserveIssueWatchTask(ctx context.Context, watchID string, issue *linearpkg.LinearIssue) (bool, error) {
+	return a.svc.Store().ReserveIssueWatchTask(ctx, watchID, issue)
 }
 
-func (a *linearServiceAdapter) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, taskID string) error {
-	return a.svc.Store().AssignIssueWatchTaskID(ctx, watchID, identifier, taskID)
-}
-
-func (a *linearServiceAdapter) ReleaseIssueWatchTask(ctx context.Context, watchID, identifier string) error {
-	return a.svc.Store().ReleaseIssueWatchTask(ctx, watchID, identifier)
+func (a *linearServiceAdapter) AssignIssueWatchTaskID(ctx context.Context, watchID, identifier, reservationID, taskID string) error {
+	return a.svc.Store().AssignIssueWatchTaskID(ctx, watchID, identifier, reservationID, taskID)
 }
 
 // sentryServiceAdapter exposes the Sentry service's issue-watch dedup methods

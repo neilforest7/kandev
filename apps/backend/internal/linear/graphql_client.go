@@ -163,6 +163,7 @@ query Viewer {
 		email
 	}
 	organization {
+		id
 		urlKey
 		name
 	}
@@ -176,6 +177,7 @@ type viewerData struct {
 		Email       string `json:"email"`
 	} `json:"viewer"`
 	Organization struct {
+		ID     string `json:"id"`
 		URLKey string `json:"urlKey"`
 		Name   string `json:"name"`
 	} `json:"organization"`
@@ -198,12 +200,13 @@ func (c *GraphQLClient) TestAuth(ctx context.Context) (*TestConnectionResult, er
 		name = data.Viewer.Name
 	}
 	return &TestConnectionResult{
-		OK:          true,
-		UserID:      data.Viewer.ID,
-		DisplayName: name,
-		Email:       data.Viewer.Email,
-		OrgSlug:     data.Organization.URLKey,
-		OrgName:     data.Organization.Name,
+		OK:             true,
+		UserID:         data.Viewer.ID,
+		DisplayName:    name,
+		Email:          data.Viewer.Email,
+		OrgSlug:        data.Organization.URLKey,
+		OrgName:        data.Organization.Name,
+		OrganizationID: data.Organization.ID,
 	}, nil
 }
 

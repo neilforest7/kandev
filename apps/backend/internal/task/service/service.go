@@ -18,6 +18,7 @@ import (
 	"github.com/kandev/kandev/internal/common/fsdiagnostics"
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/events/bus"
+	"github.com/kandev/kandev/internal/execadmission"
 	"github.com/kandev/kandev/internal/secrets"
 	"github.com/kandev/kandev/internal/task/changes"
 	"github.com/kandev/kandev/internal/task/models"
@@ -544,6 +545,10 @@ type Service struct {
 	worktreeCleanup                 WorktreeCleanup
 	canvasCleanup                   CanvasCleanup
 	executionStopper                TaskExecutionStopper
+	executionApproval               *execadmission.Client
+	executionInvestigationProfiles  []string
+	executionSource                 func(context.Context, string) (execadmission.NativeSource, error)
+	executionConfigValidator        func(context.Context, string) error
 	clarificationCanceller          TerminalClarificationCanceller
 	parkedProjectionCanceller       ParkedProjectionCanceller
 	sessionCeilingReleaser          SessionCeilingReleaser

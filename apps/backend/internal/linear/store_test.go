@@ -6,9 +6,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func reserveTestIssueWatchTask(ctx context.Context, store *Store, watchID, identifier, issueURL string) (bool, error) {
+	return store.ReserveIssueWatchTask(ctx, watchID, &LinearIssue{
+		OrganizationID: "00000000-0000-4000-8000-000000000001",
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte(identifier)).String(), Identifier: identifier, URL: issueURL,
+	})
+}
+
+func assignTestIssueWatchTaskID(ctx context.Context, store *Store, watchID, identifier, taskID string) error {
+	rows, err := store.ListIssueWatchReservations(ctx, watchID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.IssueIdentifier == identifier {
+			return store.AssignIssueWatchTaskID(ctx, watchID, identifier, row.ID, taskID)
+		}
+	}
+	return store.AssignIssueWatchTaskID(ctx, watchID, identifier, "missing", taskID)
+}
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()

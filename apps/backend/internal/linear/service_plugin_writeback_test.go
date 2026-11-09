@@ -38,10 +38,10 @@ func TestPluginWriteback(t *testing.T) {
 		"watch-plugin-writeback", workspaceID, "workflow-1", "step-1"); err != nil {
 		t.Fatalf("seed Linear issue watch: %v", err)
 	}
-	if _, err := fixture.store.ReserveIssueWatchTask(ctx, "watch-plugin-writeback", "ENG-12", "https://linear.app/acme/issue/ENG-12"); err != nil {
+	if _, err := reserveTestIssueWatchTask(ctx, fixture.store, "watch-plugin-writeback", "ENG-12", "https://linear.app/acme/issue/ENG-12"); err != nil {
 		t.Fatalf("reserve Linear source link: %v", err)
 	}
-	if err := fixture.store.AssignIssueWatchTaskID(ctx, "watch-plugin-writeback", "ENG-12", "task-linear-12"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, fixture.store, "watch-plugin-writeback", "ENG-12", "task-linear-12"); err != nil {
 		t.Fatalf("assign Linear source link: %v", err)
 	}
 	client := &pluginWritebackClient{fakeClient: &fakeClient{}, commentID: "comment-1"}

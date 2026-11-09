@@ -10,6 +10,15 @@ import (
 // update that omits one keeps it.
 const ReservedMetadataKeyPrefixCoordinator = "kandev.coordinator_"
 
+const MetaKeyLinearIssueWatchID = "linear_issue_watch_id"
+const LinearWatchExternalIDPrefix = "linear-watch:"
+const MetaKeyLinearWatchCreationComplete = "linear_watch_creation_complete"
+
+// SessionMetaKeyLinearExecutionPin is the write-once execution approval pin of a
+// session under a Linear watch root. Only the admission gate writes it, and a
+// generic session metadata replacement or deletion cannot change or drop it.
+const SessionMetaKeyLinearExecutionPin = "linear_execution_pin"
+
 // MetaKeyRequiredSubtaskCount is a trusted routine's minimum number of durable
 // child assignments. It is a creation requirement, not a child-content verdict.
 const MetaKeyRequiredSubtaskCount = "kandev.office_required_subtask_count"
@@ -27,6 +36,8 @@ func ProtectedTaskMetadataUpdate(existing, requested map[string]interface{}) map
 	for _, key := range []string{
 		MetaKeyDeferredLaunch, MetaKeyStepHandoffCarry, MetaKeyHandoffSource, MetaKeyHandoffs,
 		MetaKeyAutomationStartOwned, MetaKeyRequiredSubtaskCount, MetaKeyLastTurnError,
+		MetaKeyLinearIssueWatchID,
+		MetaKeyLinearWatchCreationComplete,
 	} {
 		if value, ok := existing[key]; ok {
 			updated[key] = value

@@ -861,3 +861,110 @@ func TestEnsureSession_AutoStartFalseNeverUpgradesPassthrough(t *testing.T) {
 		}
 	})
 }
+
+func TestEnsureSession_ExplicitRunStartsOnStepWithoutAutoStart(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	now := time.Now().UTC()
+	stepGetter := newMockStepGetter()
+	// The entry step deliberately has no auto_start_agent on-enter action.
+	stepGetter.steps["step-entry"] = &wfmodels.WorkflowStep{ID: "step-entry"}
+	agentMgr := &mockAgentManager{
+		launchAgentFunc: func(_ context.Context, _ *executor.LaunchAgentRequest) (*executor.LaunchAgentResponse, error) {
+			return &executor.LaunchAgentResponse{AgentExecutionID: "exec-1"}, nil
+		},
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithScheduler(repo, stepGetter, taskRepo, agentMgr)
+	if err := repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws1", Name: "Test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := repo.CreateWorkflow(ctx, &models.Workflow{ID: "wf1", WorkspaceID: "ws1", Name: "Test Workflow", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	seedTask := func(taskID string) {
+		if err := repo.CreateTask(ctx, &models.Task{ID: taskID, WorkflowID: "wf1", WorkspaceID: "ws1", WorkflowStepID: "step-entry", Title: "T", Metadata: map[string]interface{}{"agent_profile_id": "profile1"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed task %s: %v", taskID, err)
+		}
+		taskRepo.tasks[taskID] = &v1.Task{ID: taskID, WorkspaceID: "ws1", Metadata: map[string]any{"agent_profile_id": "profile1"}}
+	}
+	start := true
+
+	seedTask("task-auto")
+	auto, err := svc.EnsureSession(ctx, "task-auto", EnsureSessionOptions{EnsureExecution: true, AutoStart: &start, ActivationSource: LaunchActivationSourceUserAction})
+	if err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	if auto.State != string(models.TaskSessionStateCreated) {
+		t.Fatalf("automatic start on a step without auto_start_agent: State = %q, want %q", auto.State, models.TaskSessionStateCreated)
+	}
+
+	seedTask("task-explicit")
+	explicit, err := svc.EnsureSession(ctx, "task-explicit", EnsureSessionOptions{EnsureExecution: true, AutoStart: &start, ActivationSource: LaunchActivationSourceUserAction, ExplicitRun: true})
+	if err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	if explicit.State == string(models.TaskSessionStateCreated) {
+		t.Fatalf("explicit run was downgraded to prepare: State = %q", explicit.State)
+	}
+}
+
+func TestEnsureSession_ExplicitRunStartsPreparedOrFinishedSession(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	now := time.Now().UTC()
+	stepGetter := newMockStepGetter()
+	stepGetter.steps["step-entry"] = &wfmodels.WorkflowStep{ID: "step-entry"}
+	agentMgr := &mockAgentManager{
+		launchAgentFunc: func(_ context.Context, _ *executor.LaunchAgentRequest) (*executor.LaunchAgentResponse, error) {
+			return &executor.LaunchAgentResponse{AgentExecutionID: "exec-1"}, nil
+		},
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithScheduler(repo, stepGetter, taskRepo, agentMgr)
+	if err := repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws1", Name: "Test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := repo.CreateWorkflow(ctx, &models.Workflow{ID: "wf1", WorkspaceID: "ws1", Name: "Test Workflow", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	seedTask := func(taskID string) {
+		if err := repo.CreateTask(ctx, &models.Task{ID: taskID, WorkflowID: "wf1", WorkspaceID: "ws1", WorkflowStepID: "step-entry", Title: "T", Metadata: map[string]interface{}{"agent_profile_id": "profile1"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatalf("seed task %s: %v", taskID, err)
+		}
+		taskRepo.tasks[taskID] = &v1.Task{ID: taskID, WorkspaceID: "ws1", Metadata: map[string]any{"agent_profile_id": "profile1"}}
+	}
+	start, prepare := true, false
+	run := EnsureSessionOptions{EnsureExecution: true, AutoStart: &start, ActivationSource: LaunchActivationSourceUserAction, ExplicitRun: true}
+
+	// A session prepared by opening the task page is started by the exact run.
+	seedTask("task-prepared")
+	prepared, err := svc.EnsureSession(ctx, "task-prepared", EnsureSessionOptions{AutoStart: &prepare})
+	if err != nil || prepared.State != string(models.TaskSessionStateCreated) {
+		t.Fatalf("prepare: %+v %v", prepared, err)
+	}
+	started, err := svc.EnsureSession(ctx, "task-prepared", run)
+	if err != nil {
+		t.Fatalf("explicit run on prepared session: %v", err)
+	}
+	if started.SessionID != prepared.SessionID || started.State == string(models.TaskSessionStateCreated) {
+		t.Fatalf("prepared session was not started: %+v", started)
+	}
+
+	// A cancelled session is replaced by a new started session.
+	seedTask("task-cancelled")
+	cancelled, err := svc.EnsureSession(ctx, "task-cancelled", EnsureSessionOptions{AutoStart: &prepare})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := repo.UpdateTaskSessionState(ctx, cancelled.SessionID, models.TaskSessionStateCancelled, ""); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	replaced, err := svc.EnsureSession(ctx, "task-cancelled", run)
+	if err != nil {
+		t.Fatalf("explicit run on cancelled session: %v", err)
+	}
+	if replaced.SessionID == cancelled.SessionID || replaced.State == string(models.TaskSessionStateCreated) {
+		t.Fatalf("cancelled session was not replaced by a started one: %+v", replaced)
+	}
+}

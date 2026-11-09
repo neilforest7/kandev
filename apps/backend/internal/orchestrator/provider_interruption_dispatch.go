@@ -495,7 +495,7 @@ func (s *Service) closeInterruptedTurn(ctx context.Context, sessionID string) er
 		if turn.Metadata == nil {
 			turn.Metadata = map[string]any{}
 		}
-		turn.Metadata["interrupted"] = true
+		turn.Metadata[models.TurnMetaKeyInterrupted] = true
 		if err := s.turnService.UpdateTurn(ctx, turn); err != nil {
 			return err
 		}

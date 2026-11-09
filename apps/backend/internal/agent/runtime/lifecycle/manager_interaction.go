@@ -533,6 +533,9 @@ func (m *Manager) SetSessionMode(ctx context.Context, executionID, _ string, mod
 	if !exists {
 		return fmt.Errorf("execution %q not found", executionID)
 	}
+	if err := m.denyAdmittedProfileChange(execution); err != nil {
+		return err
+	}
 	operationRelease, err := execution.acquireContextResetOperation(ctx)
 	if err != nil {
 		return err
@@ -592,6 +595,9 @@ func (m *Manager) SetSessionModel(ctx context.Context, executionID, modelID stri
 	if !exists {
 		return fmt.Errorf("execution %q not found", executionID)
 	}
+	if err := m.denyAdmittedProfileChange(execution); err != nil {
+		return err
+	}
 	operationRelease, err := execution.acquireContextResetOperation(ctx)
 	if err != nil {
 		return err
@@ -631,6 +637,10 @@ func (m *Manager) SetSessionConfigOption(ctx context.Context, executionID, confi
 	execution, exists := m.executionStore.Get(executionID)
 	if !exists {
 		return fmt.Errorf("execution %q not found", executionID)
+	}
+	// A settled config option is part of the admitted profile digest.
+	if err := m.denyAdmittedProfileChange(execution); err != nil {
+		return err
 	}
 	operationRelease, err := execution.acquireContextResetOperation(ctx)
 	if err != nil {

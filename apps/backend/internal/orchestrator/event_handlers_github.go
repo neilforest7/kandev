@@ -109,6 +109,7 @@ type IssueTaskRequest struct {
 	Description    string
 	Metadata       map[string]interface{}
 	Repositories   []IssueTaskRepository
+	ExternalID     string
 }
 
 // IssueTaskRepository associates a repository with an issue task.

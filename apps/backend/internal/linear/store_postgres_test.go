@@ -53,18 +53,24 @@ func TestPostgresStoreSchemaReplay(t *testing.T) {
 		t.Fatalf("list enabled Linear issue watches: watches=%d err=%v", len(enabled), err)
 	}
 
-	reserved, err := store.ReserveIssueWatchTask(ctx, watch.ID, "ENG-123", "https://linear.app/acme/issue/ENG-123")
+	reserved, err := reserveTestIssueWatchTask(ctx, store, watch.ID, "ENG-123", "https://linear.app/acme/issue/ENG-123")
 	if err != nil || !reserved {
 		t.Fatalf("reserve Linear issue: reserved=%v err=%v", reserved, err)
 	}
-	reserved, err = store.ReserveIssueWatchTask(ctx, watch.ID, "ENG-123", "https://linear.app/acme/issue/ENG-123")
-	if err != nil || reserved {
+	reserved, err = reserveTestIssueWatchTask(ctx, store, watch.ID, "ENG-123", "https://linear.app/acme/issue/ENG-123")
+	if err != nil || !reserved {
 		t.Fatalf("duplicate Linear issue reservation: reserved=%v err=%v", reserved, err)
 	}
-	if err := store.AssignIssueWatchTaskID(ctx, watch.ID, "ENG-123", "task-1"); err != nil {
+	if err := assignTestIssueWatchTaskID(ctx, store, watch.ID, "ENG-123", "task-1"); err != nil {
 		t.Fatalf("assign Linear issue task: %v", err)
 	}
-	seen, err := store.ListSeenIssueIdentifiers(ctx, watch.ID)
+	if err := assignTestIssueWatchTaskID(ctx, store, watch.ID, "ENG-123", "task-1"); err != nil {
+		t.Fatalf("repeat Linear issue task assignment: %v", err)
+	}
+	if err := assignTestIssueWatchTaskID(ctx, store, watch.ID, "ENG-123", "task-2"); err == nil {
+		t.Fatal("conflicting Linear issue task assignment succeeded")
+	}
+	seen, err := store.ListIssueWatchReservations(ctx, watch.ID)
 	if err != nil || len(seen) != 1 {
 		t.Fatalf("list Linear seen issues: seen=%d err=%v", len(seen), err)
 	}

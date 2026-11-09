@@ -33,6 +33,16 @@ func (r *builtinMessagePolicyReader) GetBuiltinPolicySnapshot(_ context.Context,
 	return &mcpconfig.BuiltinPolicySnapshot{Policy: policy, Preferences: &mcpconfig.BuiltinTaskPreferences{Version: 1, WorkspaceID: workspaceID, TaskID: taskID, Packages: mcpconfig.BuiltinPackageChoices{p.PackageConfiguration: mcpconfig.BuiltinPreferenceOn}}}, nil
 }
 
+// builtinMessageAgentManager supplies only the profile-mode lookup the MCP
+// trust boundary needs; the real orchestrator always wires a full manager.
+type builtinMessageAgentManager struct {
+	executor.AgentManagerClient
+}
+
+func (m builtinMessageAgentManager) ResolveAgentProfile(_ context.Context, profileID string) (*executor.AgentProfileInfo, error) {
+	return &executor.AgentProfileInfo{ProfileID: profileID, AgentName: "claude", Mode: "agent"}, nil
+}
+
 type builtinMessageLaunch struct {
 	content string
 	profile *p.Context
@@ -73,7 +83,7 @@ func TestBuiltinMessageStartPreservesAcceptedPackageContext(t *testing.T) {
 			session := &models.TaskSession{ID: "session", TaskID: task.ID, State: models.TaskSessionStateCreated, IsPrimary: true, AgentProfileID: "profile"}
 			require.NoError(t, repo.CreateTask(ctx, task))
 			require.NoError(t, repo.CreateTaskSession(ctx, session))
-			exec := executor.NewExecutor(nil, repo, taskHandlers.logger, executor.ExecutorConfig{})
+			exec := executor.NewExecutor(builtinMessageAgentManager{}, repo, taskHandlers.logger, executor.ExecutorConfig{})
 			reader := &builtinMessagePolicyReader{}
 			if denied {
 				reader.err = errors.New("policy unavailable")

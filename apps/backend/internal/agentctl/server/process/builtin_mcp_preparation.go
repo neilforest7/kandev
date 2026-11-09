@@ -30,6 +30,9 @@ func (m *Manager) PrepareBuiltinProfile(profile p.Context, apply func(p.Context)
 		if existing.Name == "kandev" {
 			continue
 		}
+		if profile.ReadOnly {
+			return errors.New("read-only sessions cannot reuse a helper with external MCP servers")
+		}
 		if p.ReservedBuiltinRuntimeName(existing.Name) {
 			if m.cfg.McpProfile != nil && m.cfg.McpProfile.BuiltinPackages != nil {
 				continue

@@ -71,6 +71,22 @@ func TestBuiltinPreparedContextKeepsLaunchSnapshot(t *testing.T) {
 	require.Nil(t, PreparedMCPProfile(ctx, "task", "other"))
 }
 
+func TestBuiltinProfileReadOnlyComesFromResolvedAgentProfile(t *testing.T) {
+	repo := newMockRepository()
+	repo.tasks["task"] = &models.Task{ID: "task", WorkspaceID: "workspace"}
+	session := &models.TaskSession{ID: "session", TaskID: "task", AgentProfileID: "profile"}
+	agent := &mockAgentManager{resolveAgentProfileFunc: func(_ context.Context, id string) (*AgentProfileInfo, error) {
+		return &AgentProfileInfo{ProfileID: id, Mode: "read-only"}, nil
+	}}
+	exec := newTestExecutor(t, agent, repo)
+	reader := &builtinSnapshotReader{snapshot: &mcpconfig.BuiltinPolicySnapshot{Policy: mcpconfig.DefaultBuiltinWorkspacePolicy("workspace"), Preferences: &mcpconfig.BuiltinTaskPreferences{Version: 1, WorkspaceID: "workspace", TaskID: "task"}}}
+	exec.SetBuiltinPolicyReader(reader)
+	profile, err := exec.PrepareTaskSessionMCPProfile(context.Background(), "task", session, true)
+	require.NoError(t, err)
+	require.True(t, profile.ReadOnly)
+	require.NotNil(t, profile.BuiltinPackages)
+}
+
 func TestBuiltinFreshResumeAndModelSwitchResolveCurrentPolicy(t *testing.T) {
 	repo := newMockRepository()
 	task := &models.Task{ID: "task", WorkspaceID: "workspace"}

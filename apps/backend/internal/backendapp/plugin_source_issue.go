@@ -45,6 +45,7 @@ type pluginTaskSourceLink struct {
 	provider string
 	identity string
 	url      string
+	sourceID string
 }
 
 const (
@@ -119,14 +120,24 @@ func (c pluginSourceIssueController) linearCapabilities(ctx context.Context, res
 		result.ResourceVersion = pluginSourceIssueVersion(result, "credentials_unavailable")
 		return result, &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorMissingCredentials}
 	}
-	issue, err := c.linear.GetIssueForWorkspace(ctx, result.WorkspaceID, link.identity)
+	lookup := link.identity
+	if link.sourceID != "" {
+		lookup = link.sourceID
+	}
+	issue, err := c.linear.GetIssueForWorkspace(ctx, result.WorkspaceID, lookup)
 	if err != nil {
 		result.SourceID = link.identity
 		result.ResourceVersion = pluginSourceIssueVersion(result, "provider_unavailable")
 		return result, pluginLinearSourceError(err)
 	}
-	if issue == nil || issue.Identifier != link.identity {
+	if issue == nil || (link.sourceID != "" && issue.ID != link.sourceID) || (link.sourceID == "" && issue.Identifier != link.identity) {
 		return nil, &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorNotFound}
+	}
+	if link.sourceID != "" {
+		if issue.Identifier == "" || issue.URL == "" {
+			return nil, &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorUnavailable}
+		}
+		result.Identifier, result.URL = issue.Identifier, issue.URL
 	}
 	result.SourceID, result.Title = issue.ID, issue.Title
 	result.StatusID, result.StatusName = issue.StateID, issue.StateName
@@ -301,7 +312,7 @@ func (c pluginSourceIssueController) resolveLinearTaskSourceLink(ctx context.Con
 		metadataString(task.Metadata, "linear_issue_url") != link.IssueURL {
 		return pluginTaskSourceLink{}, false, &plugins.SourceIssueError{Kind: plugins.SourceIssueErrorStale}
 	}
-	return pluginTaskSourceLink{provider: pluginSourceProviderLinear, identity: link.IssueIdentifier, url: link.IssueURL}, true, nil
+	return pluginTaskSourceLink{provider: pluginSourceProviderLinear, identity: link.IssueIdentifier, url: link.IssueURL, sourceID: link.IssueID}, true, nil
 }
 
 func metadataString(metadata map[string]interface{}, key string) string {

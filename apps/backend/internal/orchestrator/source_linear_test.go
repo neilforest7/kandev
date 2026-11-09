@@ -9,24 +9,30 @@ import (
 )
 
 type fakeLinearService struct {
-	reserveOK  bool
-	reserveErr error
-	assignErr  error
-	releaseErr error
-	disableErr error
-	gotReserve []string
-	gotAssign  []string
-	gotRelease []string
-	gotDisable []string
+	reserveOK         bool
+	reserveErr        error
+	assignErr         error
+	releaseErr        error
+	disableErr        error
+	reserveID         string
+	gotReserve        []string
+	gotAssign         []string
+	gotReservationIDs []string
+	gotRelease        []string
+	gotDisable        []string
 }
 
-func (f *fakeLinearService) ReserveIssueWatchTask(_ context.Context, watchID, id, _ string) (bool, error) {
-	f.gotReserve = append(f.gotReserve, watchID+":"+id)
+func (f *fakeLinearService) ReserveIssueWatchTask(_ context.Context, watchID string, issue *linear.LinearIssue) (bool, error) {
+	f.gotReserve = append(f.gotReserve, watchID+":"+issue.Identifier)
+	if f.reserveID != "" {
+		issue.ReservationID = f.reserveID
+	}
 	return f.reserveOK, f.reserveErr
 }
 
-func (f *fakeLinearService) AssignIssueWatchTaskID(_ context.Context, watchID, id, taskID string) error {
+func (f *fakeLinearService) AssignIssueWatchTaskID(_ context.Context, watchID, id, reservationID string, taskID string) error {
 	f.gotAssign = append(f.gotAssign, watchID+":"+id+":"+taskID)
+	f.gotReservationIDs = append(f.gotReservationIDs, reservationID)
 	return f.assignErr
 }
 
@@ -50,15 +56,17 @@ func sampleLinearEvent() *linear.NewLinearIssueEvent {
 		ExecutorProfileID: "exec-1",
 		Prompt:            "Work on {{issue.identifier}}: {{issue.title}}",
 		Issue: &linear.LinearIssue{
-			Identifier:    "ENG-1",
-			Title:         "Bug",
-			URL:           "https://linear.app/x/issue/ENG-1",
-			StateName:     "Todo",
-			AssigneeName:  "Alice",
-			CreatorName:   "Bob",
-			Description:   "details",
-			PriorityLabel: "High",
-			TeamKey:       "ENG",
+			ID:             "00000000-0000-4000-8000-000000000002",
+			OrganizationID: "00000000-0000-4000-8000-000000000001",
+			Identifier:     "ENG-1",
+			Title:          "Bug",
+			URL:            "https://linear.app/x/issue/ENG-1",
+			StateName:      "Todo",
+			AssigneeName:   "Alice",
+			CreatorName:    "Bob",
+			Description:    "details",
+			PriorityLabel:  "High",
+			TeamKey:        "ENG",
 		},
 	}
 }
@@ -82,13 +90,11 @@ func TestLinearSource_Reserve_Passthrough(t *testing.T) {
 	}
 }
 
-func TestLinearSource_Reserve_NilServiceFailOpen(t *testing.T) {
-	// Matches today's reserveLinearIssue: when service is unset (boot order
-	// corner case) the pipeline proceeds — better to risk a dup than drop.
+func TestLinearSource_Reserve_NilServiceFailsClosed(t *testing.T) {
 	src := &LinearWatcherSource{service: nil}
 	ok, err := src.Reserve(context.Background(), sampleLinearEvent())
-	if err != nil || !ok {
-		t.Fatalf("expected nil service to fail open, got ok=%v err=%v", ok, err)
+	if err == nil || ok {
+		t.Fatalf("expected nil service to fail closed, got ok=%v err=%v", ok, err)
 	}
 }
 
@@ -109,6 +115,9 @@ func TestLinearSource_BuildTaskRequest(t *testing.T) {
 	req, err := src.BuildTaskRequest(sampleLinearEvent())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ExternalID != "linear-watch:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002" {
+		t.Fatalf("unexpected stable identity: %q", req.ExternalID)
 	}
 	if req.Title != "[ENG-1] Bug" {
 		t.Errorf("title = %q", req.Title)
@@ -160,6 +169,28 @@ func TestLinearSource_BuildTaskRequest_WrongType(t *testing.T) {
 	}
 }
 
+func TestLinearSource_RecoveryPreservesSourceAssociation(t *testing.T) {
+	event := sampleLinearEvent()
+	event.Issue.Identifier, event.Issue.URL = "NEW-9", "https://linear.app/x/issue/NEW-9"
+	event.Issue.RecoveryPending = true
+	event.Issue.ReservationIdentifier, event.Issue.ReservationURL = "ENG-1", "https://linear.app/x/issue/ENG-1"
+	svc := &fakeLinearService{}
+	source := &LinearWatcherSource{service: svc}
+	request, err := source.BuildTaskRequest(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Metadata["linear_issue_identifier"] != "ENG-1" || request.Metadata["linear_issue_url"] != event.Issue.ReservationURL {
+		t.Fatalf("source metadata = %+v", request.Metadata)
+	}
+	if err := source.AttachTaskID(context.Background(), event, "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(svc.gotAssign) != 1 || svc.gotAssign[0] != "watch-1:ENG-1:task-1" {
+		t.Fatalf("reservation attachment = %v", svc.gotAssign)
+	}
+}
+
 func TestLinearSource_AttachTaskID(t *testing.T) {
 	svc := &fakeLinearService{}
 	src := &LinearWatcherSource{service: svc}
@@ -171,24 +202,27 @@ func TestLinearSource_AttachTaskID(t *testing.T) {
 	}
 }
 
-func TestLinearSource_Release(t *testing.T) {
-	svc := &fakeLinearService{}
-	src := &LinearWatcherSource{service: svc}
-	src.Release(context.Background(), sampleLinearEvent())
-	if len(svc.gotRelease) != 1 || svc.gotRelease[0] != "watch-1:ENG-1" {
-		t.Fatalf("unexpected release args: %v", svc.gotRelease)
+func TestLinearSourceCarriesReservationGenerationToAttach(t *testing.T) {
+	svc := &fakeLinearService{reserveOK: true, reserveID: "generation"}
+	source := &LinearWatcherSource{service: svc}
+	event := sampleLinearEvent()
+	if ok, err := source.Reserve(context.Background(), event); err != nil || !ok {
+		t.Fatalf("reserve: %v, %v", ok, err)
+	}
+	if err := source.AttachTaskID(context.Background(), event, "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(svc.gotReservationIDs) != 1 || svc.gotReservationIDs[0] != "generation" {
+		t.Fatalf("attachment generation = %v", svc.gotReservationIDs)
 	}
 }
 
-func TestLinearSource_Release_ErrorIsLoggedNotPropagated(t *testing.T) {
-	svc := &fakeLinearService{releaseErr: errors.New("dedup store down")}
-	src := &LinearWatcherSource{service: svc, logger: nopLogger(t)}
-	// Release returns no value: failure must be swallowed and logged.
-	// We only assert it does not panic and that the underlying service
-	// was still asked to release.
+func TestLinearSource_ReleasePreservesReservation(t *testing.T) {
+	svc := &fakeLinearService{}
+	src := &LinearWatcherSource{service: svc}
 	src.Release(context.Background(), sampleLinearEvent())
-	if len(svc.gotRelease) != 1 {
-		t.Fatalf("expected release call to be attempted, got %d", len(svc.gotRelease))
+	if len(svc.gotRelease) != 0 {
+		t.Fatalf("unexpected release args: %v", svc.gotRelease)
 	}
 }
 
