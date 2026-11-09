@@ -138,6 +138,15 @@ func (h *pluginHost) applySourceIssueWriteback(
 ) (*pluginsdk.CommandResult, *pluginsdk.SourceIssueWritebackReceipt, error) {
 	authorization, result := h.authorizeSourceWriteback(command, operation)
 	if result != nil {
+		if result.Status == pluginsdk.CommandDenied {
+			// A denial is a definite no-effect only for a command that never ran.
+			// An exact retry of an admitted command (for example after a plugin
+			// upgrade bumped the approval revision) gets its stored outcome instead,
+			// so a write that may already have reached the provider is never re-sent.
+			if replayed, receipt, ok := h.replayAdmittedSourceWriteback(ctx, command, operation); ok {
+				return replayed, receipt, nil
+			}
+		}
 		return result, nil, nil
 	}
 	defer authorization.unlock()
@@ -504,4 +513,31 @@ func completeSourceWriteback(
 			sourceWritebackReceiptFromState(sourceRecord), nil
 	}
 	return commandResultFromRecord(completed), sourceWritebackReceiptFromState(sourceRecord), nil
+}
+
+// replayAdmittedSourceWriteback settles an exact retry of an already admitted
+// source write from its durable receipts only. It never reads or writes the
+// provider: a write that may have started resolves to its stored outcome, or to
+// UNCERTAIN when it was interrupted mid-send.
+func (h *pluginHost) replayAdmittedSourceWriteback(ctx context.Context, command pluginsdk.SourceIssueWritebackCommand, operation string) (*pluginsdk.CommandResult, *pluginsdk.SourceIssueWritebackReceipt, bool) {
+	store := h.commandStore
+	if store == nil && h.service != nil {
+		store = h.service.exactCommandStoreDep()
+	}
+	if store == nil || h.installationID == "" {
+		return nil, nil, false
+	}
+	digest, err := sourceIssueWritebackDigest(operation, command)
+	if err != nil {
+		return nil, nil, false
+	}
+	record, err := store.GetByKey(ctx, h.installationID, command.WorkspaceID, sourceIssueMethod(operation), command.IdempotencyKey)
+	if err != nil || record.Intent.PayloadDigest != digest {
+		return nil, nil, false
+	}
+	if record.Receipt.State == exactReceiptStateCompleted {
+		return replaySourceWriteback(record), storedSourceWritebackReceipt(ctx, store, record.Intent.OperationID), true
+	}
+	return resumeSourceWritebackReceipt(ctx, &sourceWritebackAdmission{store: store, record: record, command: command,
+		operation: operation, payloadDigest: digest, installationID: h.installationID})
 }
