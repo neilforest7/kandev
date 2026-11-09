@@ -2464,6 +2464,12 @@ func classifyPluginMoveError(err error) error {
 	if errors.Is(err, taskservice.ErrWorkflowResolutionConflict) {
 		return status.Error(codes.Aborted, "task workflow changed concurrently, retry the move")
 	}
+	// A stale expected version is a definite no-effect: Aborted lets the Host
+	// complete the receipt as CONFLICT so the caller re-reads, instead of an
+	// UNAVAILABLE receipt replayed with the same stale version forever.
+	if errors.Is(err, repoerrors.ErrTaskVersionConflict) {
+		return status.Error(codes.Aborted, "task resource version changed")
+	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "archived tasks cannot be moved"):
