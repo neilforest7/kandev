@@ -198,3 +198,41 @@ func TestHandleListTaskSessions_TaskWithoutSessionsReturnsEmptyList(t *testing.T
 	assert.Equal(t, float64(0), payload["total"])
 	assert.Equal(t, []interface{}{}, payload["sessions"], "sessions must serialize as [] rather than null")
 }
+
+// The gate pins the approved plan version write-once on the session, and no
+// other MCP tool surfaces it. A session admitted under a Linear watch root
+// must therefore report its version here, or an agent that has to cite it
+// (e.g. in a child task's external_id) cannot learn it without outside help.
+func TestHandleListTaskSessions_SurfacesApprovedPlanVersion(t *testing.T) {
+	svc, repo := newTestTaskService(t)
+	task, primary, _ := seedTaskWithSessions(t, svc, repo, 0)
+	ctx := context.Background()
+	pinned := &models.TaskSession{
+		ID:             "sess-pinned",
+		TaskID:         task.ID,
+		AgentProfileID: "agent-profile-1",
+		State:          models.TaskSessionStateRunning,
+		StartedAt:      time.Now(),
+		Metadata: map[string]interface{}{
+			models.SessionMetaKeyLinearExecutionPin: map[string]interface{}{
+				"planVersion": "plan-c2202515c1ef585c55a63c47",
+				"approvalId":  "acb3c8ed-998c-441e-bcdb-9e4b2140a1d1",
+			},
+		},
+	}
+	require.NoError(t, repo.CreateTaskSession(ctx, pinned))
+	h := &Handlers{taskSvc: svc, logger: testLogger(t).WithFields()}
+	msg := makeWSMessage(t, ws.ActionMCPListTaskSessions, map[string]interface{}{
+		"task_id": task.ID,
+	})
+	resp, err := h.handleListTaskSessions(ctx, msg)
+	require.NoError(t, err)
+	entries := sessionEntries(t, listSessionsPayload(t, resp))
+	require.Len(t, entries, 2)
+	// Newest first: the pinned session leads and carries its version.
+	assert.Equal(t, pinned.ID, entries[0]["session_id"])
+	assert.Equal(t, "plan-c2202515c1ef585c55a63c47", entries[0]["approved_plan_version"])
+	// A session the gate never pinned must not invent a version.
+	assert.Equal(t, primary.ID, entries[1]["session_id"])
+	assert.NotContains(t, entries[1], "approved_plan_version")
+}
