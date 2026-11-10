@@ -380,7 +380,7 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 
 // linearExecutionWatchdogInterval keeps the admission freshness window short
 // without tying it to the heavy one-minute reconciliation pass.
-const linearExecutionWatchdogInterval = 10 * time.Second
+const linearExecutionWatchdogInterval = 20 * time.Second
 
 // StartLinearExecutionWatchdog runs the admission watchdog on its own fixed
 // tick for the lifetime of the manager context.
@@ -400,7 +400,7 @@ func (s *Service) StartLinearExecutionWatchdog(ctx context.Context) {
 			}
 		}
 	}()
-	s.logger.Info("linear execution watchdog started (every 10 seconds)")
+	s.logger.Info("linear execution watchdog started (every 20 seconds)")
 }
 
 // SetExecutionConfigValidator installs the shared runtime validator the watchdog
