@@ -1299,6 +1299,7 @@ func (s *Service) recordSessionLaunchFailure(ctx context.Context, taskID, sessio
 	if !changed {
 		return false
 	}
+	s.recordUntypedLaunchFailureRecovery(ctx, taskID, sessionID, launchErr)
 	updated, err := s.updateTaskStateForEarlyLaunchFailure(ctx, taskID, sessionID)
 	if err != nil {
 		s.logger.Warn("failed to update task state to FAILED after early launch error",
@@ -1312,6 +1313,51 @@ func (s *Service) recordSessionLaunchFailure(ctx context.Context, taskID, sessio
 	}
 	s.processParentChildrenCompletedForTaskState(ctx, taskID, v1.TaskStateFailed)
 	return true
+}
+
+// recordUntypedLaunchFailureRecovery gives a failure that never reached the
+// executor's typed launch-error persistence (for example a canceled launch
+// context during environment lookup) the same stamped retry_launch error the
+// executor would have written. Without it the failed session, and a root it
+// failed, have no recovery entry. An active error already on the session wins,
+// and the session snapshot CAS refuses a concurrent writer.
+func (s *Service) recordUntypedLaunchFailureRecovery(ctx context.Context, taskID, sessionID string, launchErr error) {
+	updater, ok := s.repo.(cleanupFailureSnapshotUpdater)
+	if !ok {
+		return
+	}
+	session, err := s.repo.GetTaskSession(ctx, sessionID)
+	if err != nil || session == nil || session.State != models.TaskSessionStateFailed {
+		return
+	}
+	if current, found := models.LoadLastAgentError(session.Metadata); found && !current.IsDismissed() {
+		return
+	}
+	now := time.Now().UTC()
+	value := models.LastAgentError{
+		Message:         launchErr.Error(),
+		OccurredAt:      now,
+		Scope:           models.ErrorScopeSession,
+		Code:            models.LaunchErrorCategoryGenericLaunchFailure,
+		RecoveryActions: []string{models.RecoveryActionRetryLaunch},
+		StampValue:      models.StableLaunchErrorStamp(taskID, sessionID, now.Format(time.RFC3339Nano)),
+	}
+	updated := *session
+	updated.Metadata = cloneSessionMetadata(session.Metadata)
+	updated.Metadata[models.SessionMetaKeyLastAgentError] = value
+	stored, err := updater.UpdateTaskSessionIfCurrentSnapshot(ctx, &updated, session.State, session.UpdatedAt, updated.Metadata)
+	if err != nil {
+		s.logger.Warn("failed to record launch failure recovery",
+			zap.String("task_id", taskID), zap.String("session_id", sessionID), zap.Error(err))
+		return
+	}
+	if !stored || s.eventBus == nil {
+		return
+	}
+	if err := s.publishTaskSessionErrorEvent(ctx, taskID, sessionID, true, &value); err != nil {
+		s.logger.Warn("failed to publish launch failure recovery",
+			zap.String("task_id", taskID), zap.String("session_id", sessionID), zap.Error(err))
+	}
 }
 
 func (s *Service) updateTaskStateForEarlyLaunchFailure(

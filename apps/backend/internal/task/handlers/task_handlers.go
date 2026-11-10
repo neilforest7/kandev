@@ -278,7 +278,6 @@ func (h *TaskHandlers) registerHTTP(router *gin.Engine) {
 	api.GET("/tasks/:id/environment/live", h.httpGetTaskEnvironmentLive)
 	api.POST("/tasks/:id/environment/reset", h.httpResetTaskEnvironment)
 	api.GET("/task-sessions/:id/turns", h.httpListSessionTurns)
-	api.GET("/task-sessions/:id/execution-intervals", h.httpGetSessionExecutionIntervals)
 	api.GET("/task-sessions/:id/turn-changes", h.httpListTurnChangeHistory)
 	api.GET("/task-sessions/:id/turn-changes/:changeSetID", h.httpGetTurnChangeHistory)
 	api.GET("/task-sessions/:id/turn-changes/:changeSetID/repositories/:repositoryChangeID/files", h.httpListTurnChangeFiles)
