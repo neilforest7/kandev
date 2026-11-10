@@ -1186,10 +1186,6 @@ func (m *mockRepository) ListTurnsBySession(ctx context.Context, sessionID strin
 	return nil, nil
 }
 
-func (m *mockRepository) ReadSessionTurnIntervals(ctx context.Context, sessionID string) ([]*models.Turn, string, models.TaskSessionState, map[string]struct{}, error) {
-	return nil, "", "", nil, nil
-}
-
 // Task Session operations
 func (m *mockRepository) GetTaskSessionByTaskID(ctx context.Context, taskID string) (*models.TaskSession, error) {
 	return nil, nil

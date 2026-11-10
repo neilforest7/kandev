@@ -627,20 +627,6 @@ type TurnRepository interface {
 	AbandonTurn(ctx context.Context, id string) error
 	CompletePendingToolCallsForTurn(ctx context.Context, turnID string) (int64, error)
 	ListTurnsBySession(ctx context.Context, sessionID string) ([]*models.Turn, error)
-	// ReadSessionTurnIntervals reads a session's turn rows in start order
-	// together with the current open turn, the session state, and the turns a
-	// message references, all from one read snapshot. Unlike ListTurnsBySession it
-	// applies no history predicate: a reservation the transcript surface hides is
-	// still a turn that execution accounting must report as unbilled rather than
-	// silently drop from a total.
-	//
-	// The four values come from the same transaction because a turn rollover
-	// between separate reads would pair a stale current-turn id with fresh rows
-	// and misclassify a live turn.
-	ReadSessionTurnIntervals(
-		ctx context.Context,
-		sessionID string,
-	) (turns []*models.Turn, activeTurnID string, state models.TaskSessionState, referencedTurnIDs map[string]struct{}, err error)
 }
 
 // SessionRepository handles task session lifecycle and workflow-session relationships.
