@@ -21,6 +21,8 @@ import (
 type repoDescriptionWriter struct {
 	repo  *sqliterepo.Repository
 	calls int
+	// onWrite runs after the description is stored, before UpdateTask returns.
+	onWrite func()
 }
 
 func (w *repoDescriptionWriter) UpdateTask(ctx context.Context, id string, req *taskservice.UpdateTaskRequest) (*models.Task, error) {
@@ -30,7 +32,13 @@ func (w *repoDescriptionWriter) UpdateTask(ctx context.Context, id string, req *
 		return nil, err
 	}
 	task.Description = *req.Description
-	return task, w.repo.UpdateTask(ctx, task)
+	if err := w.repo.UpdateTask(ctx, task); err != nil {
+		return nil, err
+	}
+	if w.onWrite != nil {
+		w.onWrite()
+	}
+	return task, nil
 }
 
 const linearTemplate = "prompt: {{issue.description}}"
@@ -210,4 +218,40 @@ func TestWorkflowEntryAndQueuedEntryDispatchRefreshedRequirement(t *testing.T) {
 		require.NoError(t, snapErr)
 		require.Empty(t, entries)
 	})
+}
+
+// Two refreshes interleave: the second one runs completely (and rewrites the
+// stored description) between the first one's write and its return. Each result
+// must still pair its own text with its own digest; reading the description back
+// after the write would hand the first caller the second one's text.
+func TestRefreshLinearRequirementPairsTextAndDigestUnderInterleaving(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	seedTaskAndSession(t, repo, "linear-root", "s1", models.TaskSessionStateCreated)
+	snapshotA, snapshotB := linearSnapshot("description A"), linearSnapshot("description B")
+	fake := &fakeLinearService{snapshot: snapshotA}
+	svc := createTestService(repo, newMockStepGetter(), newMockTaskRepo())
+	linearize(t, repo, svc, "linear-root", fake)
+	writer := &repoDescriptionWriter{repo: repo}
+	svc.SetLinearRequirementTaskService(writer)
+
+	var nested *linearRequirement
+	writer.onWrite = func() {
+		writer.onWrite = nil
+		fake.snapshot = snapshotB
+		task, err := repo.GetTask(ctx, "linear-root")
+		require.NoError(t, err)
+		_, nested, err = svc.refreshLinearRequirement(ctx, task)
+		require.NoError(t, err)
+	}
+	task, err := repo.GetTask(ctx, "linear-root")
+	require.NoError(t, err)
+	got, req, err := svc.refreshLinearRequirement(ctx, task)
+	require.NoError(t, err)
+
+	require.Equal(t, "prompt: description A", req.Description)
+	require.Equal(t, linearRequirementDigest(snapshotA.Issue), req.Digest)
+	require.Equal(t, req.Description, got.Description, "the task handed to prompt composition carries the same snapshot")
+	require.Equal(t, "prompt: description B", nested.Description)
+	require.Equal(t, linearRequirementDigest(snapshotB.Issue), nested.Digest)
 }

@@ -370,7 +370,7 @@ func (c *autoStartAgentCallback) queueStepPromptIfBusy(
 	if err != nil {
 		return false, fmt.Errorf("load task for queued auto-start: %w", err)
 	}
-	task, requirementDigest, err := c.svc.refreshLinearRequirement(ctx, task)
+	task, requirement, err := c.svc.refreshLinearRequirement(ctx, task)
 	if err != nil {
 		return false, err
 	}
@@ -387,7 +387,7 @@ func (c *autoStartAgentCallback) queueStepPromptIfBusy(
 		); err != nil {
 			return err
 		}
-		return c.svc.stampLinearRequirement(ctx, session.ID, requirementDigest)
+		return c.svc.stampLinearRequirement(ctx, session.ID, requirementDigestOf(requirement))
 	}); err != nil {
 		return false, fmt.Errorf("queue auto-start prompt: %w", err)
 	}

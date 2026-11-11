@@ -961,7 +961,7 @@ func (s *Service) startCreatedSession(
 
 	effectivePrompt := prompt
 	if effectivePrompt == "" && !options.skipTaskDescriptionFallback {
-		effectivePrompt = task.Description
+		effectivePrompt = launchDescription(ctx, task.Description)
 	}
 
 	// NOTE: on_turn_start is intentionally NOT processed here.
@@ -1966,7 +1966,7 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 	// Use provided prompt, fall back to task description
 	effectivePrompt := prompt
 	if effectivePrompt == "" {
-		effectivePrompt = task.Description
+		effectivePrompt = launchDescription(ctx, task.Description)
 	}
 
 	// Prepare session first so we have the sessionID for config context injection.
@@ -4264,7 +4264,7 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 	if err != nil {
 		return fmt.Errorf("failed to get task: %w", err)
 	}
-	dbTask, requirementDigest, err := s.refreshLinearRequirement(ctx, dbTask)
+	dbTask, requirement, err := s.refreshLinearRequirement(ctx, dbTask)
 	if err != nil {
 		return err
 	}
@@ -4323,7 +4323,7 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 		return fmt.Errorf("failed to build workflow prompt: %w", err)
 	}
 
-	if err := s.stampLinearRequirement(ctx, sessionID, requirementDigest); err != nil {
+	if err := s.stampLinearRequirement(ctx, sessionID, requirementDigestOf(requirement)); err != nil {
 		return err
 	}
 	if err := s.ensureSessionRunningWithBinding(ctx, sessionID, session, launchOriginAutomatic, entryBinding); err != nil {

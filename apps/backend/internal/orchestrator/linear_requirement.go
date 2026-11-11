@@ -34,18 +34,50 @@ const (
 	linearRequirementConflict             = "conflict"
 )
 
-type linearRequirementDigestCtxKey struct{}
+// linearRequirement is one rendered snapshot of a Linear issue: the exact
+// description text and the digest of the title and description it came from.
+// They travel together into prompt composition and the session stamp; a stored
+// description is never re-read and paired with a digest from another read.
+type linearRequirement struct {
+	Description string
+	Digest      string
+}
 
-func withLinearRequirementDigest(ctx context.Context, digest string) context.Context {
-	if digest == "" {
+type linearRequirementCtxKey struct{}
+
+func withLinearRequirement(ctx context.Context, req *linearRequirement) context.Context {
+	if req == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, linearRequirementDigestCtxKey{}, digest)
+	return context.WithValue(ctx, linearRequirementCtxKey{}, req)
+}
+
+func linearRequirementFromContext(ctx context.Context) *linearRequirement {
+	req, _ := ctx.Value(linearRequirementCtxKey{}).(*linearRequirement)
+	return req
+}
+
+func requirementDigestOf(req *linearRequirement) string {
+	if req == nil {
+		return ""
+	}
+	return req.Digest
 }
 
 func linearRequirementDigestFromContext(ctx context.Context) string {
-	digest, _ := ctx.Value(linearRequirementDigestCtxKey{}).(string)
-	return digest
+	if req := linearRequirementFromContext(ctx); req != nil {
+		return req.Digest
+	}
+	return ""
+}
+
+// launchDescription is the description a launch falls back to: the rendered
+// snapshot when this launch refreshed one, else the stored text.
+func launchDescription(ctx context.Context, stored string) string {
+	if req := linearRequirementFromContext(ctx); req != nil {
+		return req.Description
+	}
+	return stored
 }
 
 // linearRequirementDigest is sha256 over the UTF-8 title, a 0x00 byte and the
@@ -61,59 +93,55 @@ func linearRequirementDigest(issue *linear.LinearIssue) string {
 
 // refreshLinearRequirement re-renders a Linear watch root's description from the
 // live issue with the watch's own template, so a workflow entry never prompts the
-// agent with a requirement that changed after the task was created. It returns
-// the task and the digest of the requirement it now carries ("" for tasks without
-// a Linear watch link, which are left untouched). A failed source read is an
-// error: the caller must not launch on a requirement it could not confirm.
-func (s *Service) refreshLinearRequirement(ctx context.Context, task *models.Task) (*models.Task, string, error) {
+// agent with a requirement that changed after the task was created. It returns a
+// copy of the task carrying the rendered text, and that snapshot (nil for tasks
+// without a Linear watch link, which are left untouched). A failed source read is
+// an error: the caller must not launch on a requirement it could not confirm.
+func (s *Service) refreshLinearRequirement(ctx context.Context, task *models.Task) (*models.Task, *linearRequirement, error) {
 	if task == nil || task.ParentID != "" || s.linearService == nil {
-		return task, "", nil
+		return task, nil, nil
 	}
 	if _, watched := task.Metadata[linearWatchMetadataKey]; !watched {
-		return task, "", nil
+		return task, nil, nil
 	}
 	snapshot, err := s.linearService.GetTaskIssueSnapshot(ctx, task.ID)
 	if errors.Is(err, linear.ErrSourceLinkNotFound) {
-		return task, "", nil
+		return task, nil, nil
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("refresh linear requirement: %w", err)
+		return nil, nil, fmt.Errorf("refresh linear requirement: %w", err)
 	}
-	description := interpolateLinearPrompt(snapshot.Prompt, snapshot.Issue)
-	digest := linearRequirementDigest(snapshot.Issue)
-	if task.Description == description {
-		return task, digest, nil
+	req := &linearRequirement{Description: interpolateLinearPrompt(snapshot.Prompt, snapshot.Issue), Digest: linearRequirementDigest(snapshot.Issue)}
+	if task.Description != req.Description {
+		if s.linearRequirementTasks == nil {
+			return nil, nil, errors.New("refresh linear requirement: task service unavailable")
+		}
+		if _, err := s.linearRequirementTasks.UpdateTask(ctx, task.ID, &taskservice.UpdateTaskRequest{Description: &req.Description}); err != nil {
+			return nil, nil, fmt.Errorf("refresh linear requirement: %w", err)
+		}
 	}
-	if s.linearRequirementTasks == nil {
-		return nil, "", errors.New("refresh linear requirement: task service unavailable")
-	}
-	if _, err := s.linearRequirementTasks.UpdateTask(ctx, task.ID, &taskservice.UpdateTaskRequest{Description: &description}); err != nil {
-		return nil, "", fmt.Errorf("refresh linear requirement: %w", err)
-	}
-	reloaded, err := s.repo.GetTask(ctx, task.ID)
-	if err != nil {
-		return nil, "", fmt.Errorf("refresh linear requirement: %w", err)
-	}
-	return reloaded, digest, nil
+	rendered := *task
+	rendered.Description = req.Description
+	return &rendered, req, nil
 }
 
 // refreshLinearRequirementForStart refreshes the task behind a launch, swaps in
-// the new description when the caller's prompt was taken from the old one, and
-// carries the digest in the context so the launch stamps its session after
-// admission.
+// the rendered description when the caller's prompt was taken from the old one,
+// and carries the snapshot in the context so the launch composes from it and
+// stamps its session after admission.
 func (s *Service) refreshLinearRequirementForStart(ctx context.Context, taskID, prompt string) (context.Context, string, error) {
 	task, err := s.repo.GetTask(ctx, taskID)
 	if err != nil || task == nil {
 		return ctx, prompt, nil // the launch path reports a missing task itself
 	}
-	refreshed, digest, err := s.refreshLinearRequirement(ctx, task)
+	_, req, err := s.refreshLinearRequirement(ctx, task)
 	if err != nil {
 		return ctx, "", err
 	}
-	if prompt == task.Description {
-		prompt = refreshed.Description
+	if req != nil && prompt == task.Description {
+		prompt = req.Description
 	}
-	return withLinearRequirementDigest(ctx, digest), prompt, nil
+	return withLinearRequirement(ctx, req), prompt, nil
 }
 
 // stampLinearRequirement records the dispatched requirement on its session. The
