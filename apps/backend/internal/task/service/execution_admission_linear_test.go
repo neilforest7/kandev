@@ -339,11 +339,22 @@ func TestLinearExecutionWatchdogTreatsAnUnknownExecutionAsConfirmedStop(t *testi
 // A healthy waiting session has no runtime execution between turns. While the
 // bridge answers garbage or says "unavailable" the watchdog fails closed but
 // must not close it.
+func TestLinearExecutionWatchdogClosesOnEveryDefinitiveReason(t *testing.T) {
+	for reason := range definitiveReasons {
+		t.Run(reason, func(t *testing.T) {
+			require.True(t, definitiveRefusal(&execadmission.Denied{Reason: reason}))
+		})
+	}
+	require.False(t, definitiveRefusal(errors.New("execution approval bridge is unavailable")))
+	require.False(t, definitiveRefusal(&execadmission.Denied{Reason: "paused"}))
+}
+
 func TestLinearExecutionWatchdogKeepsAWaitingSessionWhenTheRefusalIsNotDefinitive(t *testing.T) {
-	for name, reply := range map[string]string{
-		"malformed":   `not json`,
-		"unavailable": `{"approved":false,"reason":"unavailable"}`,
-	} {
+	replies := map[string]string{"malformed": `not json`}
+	for _, reason := range []string{"unavailable", "paused", "no-approval", "not-approved", "unconfirmed-answer", "origin-session", "profile-changed"} {
+		replies[reason] = `{"approved":false,"reason":"` + reason + `"}`
+	}
+	for name, reply := range replies {
 		t.Run(name, func(t *testing.T) {
 			fixture := newLinearGateFixture(t)
 			require.NoError(t, fixture.admit(gateProfile(t, "model", "agent")))

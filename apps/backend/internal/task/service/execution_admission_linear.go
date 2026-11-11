@@ -403,12 +403,22 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 		zap.String("admission_error", admissionErr.Error()))
 }
 
-// definitiveRefusal reports a bridge refusal that states a decision. The
-// bridge's own "unavailable" reason is an internal failure reported as a denial,
-// so it is not one.
+// definitiveReasons are the bridge refusals that state a final decision about
+// the work: the issue is canceled, completed or out of scope, the requirement it
+// was approved for changed, or the plan was superseded, revoked or rejected.
+// Every other reason (paused, unavailable, no-approval, not-approved,
+// unconfirmed-answer, origin-session, profile-changed, ...) is a hold, a wait or
+// an internal failure and is not listed on purpose.
+var definitiveReasons = map[string]bool{
+	"issue-canceled": true, "issue-closed": true, "stale-source": true, "stale-requirement": true,
+	"plan-superseded": true, "revoked": true, "rejected": true,
+}
+
+// definitiveRefusal reports a bridge refusal that is a final decision, so a
+// session whose execution the runtime no longer knows may be closed.
 func definitiveRefusal(err error) bool {
 	var denied *execadmission.Denied
-	return errors.As(err, &denied) && denied.Reason != "unavailable"
+	return errors.As(err, &denied) && definitiveReasons[denied.Reason]
 }
 
 // linearExecutionWatchdogInterval keeps the admission freshness window short
