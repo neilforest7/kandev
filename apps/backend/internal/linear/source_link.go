@@ -21,6 +21,7 @@ type TaskIssueLink struct {
 	IssueID         string
 	IssueIdentifier string
 	IssueURL        string
+	IssueWatchID    string
 }
 
 // GetTaskIssueLink resolves only issues attached through a persisted Linear watch.
@@ -51,6 +52,7 @@ func (s *Store) GetTaskIssueLink(ctx context.Context, taskID string) (*TaskIssue
 		if err := rows.Scan(&candidate.WorkspaceID, &candidate.IssueIdentifier, &candidate.IssueURL, &identity, &watchID); err != nil {
 			return nil, err
 		}
+		candidate.IssueWatchID = watchID
 		parts := strings.SplitN(identity, ":", 4)
 		if len(parts) == 4 && parts[0] == "linear" {
 			generation, genErr := uuid.Parse(parts[3])
@@ -87,4 +89,35 @@ func (s *Service) ValidateTaskIssueLink(ctx context.Context, taskID, workspaceID
 		return fmt.Errorf("%w: task source association changed", ErrSourceLinkNotFound)
 	}
 	return nil
+}
+
+// TaskIssueSnapshot is the live source issue of a watch-linked task with the
+// watch's prompt template, enough to render the task description again.
+type TaskIssueSnapshot struct {
+	Prompt string
+	Issue  *LinearIssue
+}
+
+// GetTaskIssueSnapshot reads the live issue behind a watch-linked task. It
+// returns ErrSourceLinkNotFound for tasks without a Linear watch link.
+func (s *Service) GetTaskIssueSnapshot(ctx context.Context, taskID string) (*TaskIssueSnapshot, error) {
+	link, err := s.GetTaskIssueLink(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if link.IssueID == "" || link.IssueWatchID == "" {
+		return nil, fmt.Errorf("linear: task source link has no issue identity")
+	}
+	watch, err := s.GetIssueWatch(ctx, link.IssueWatchID)
+	if err != nil {
+		return nil, err
+	}
+	issue, err := s.GetIssueForWorkspace(ctx, link.WorkspaceID, link.IssueID)
+	if err != nil {
+		return nil, err
+	}
+	if issue == nil || issue.ID != link.IssueID {
+		return nil, fmt.Errorf("linear: live issue does not match the task source link")
+	}
+	return &TaskIssueSnapshot{Prompt: watch.Prompt, Issue: issue}, nil
 }

@@ -370,6 +370,9 @@ func (c *autoStartAgentCallback) queueStepPromptIfBusy(
 	if err != nil {
 		return false, fmt.Errorf("load task for queued auto-start: %w", err)
 	}
+	if task, err = c.svc.refreshLinearRequirement(ctx, task); err != nil {
+		return false, err
+	}
 	if err := c.svc.withWorkflowAutoStartInputAdmission(ctx, session, step, true, func() error {
 		prompt, promptReferenceContext, err := c.svc.buildWorkflowEntryPrompt(
 			ctx, task.Description, step, task.ID, session.ID, session.QueueIncarnationID, session.IsPassthrough,

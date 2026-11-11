@@ -1721,6 +1721,11 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 		ctx = withInitialPromptSubmission(ctx, submission)
 	}
 
+	prompt, err := s.refreshLinearRequirementForStart(ctx, taskID, prompt)
+	if err != nil {
+		return nil, err
+	}
+
 	ctx = executor.WithTaskRunnerProfileExplicit(ctx, strings.TrimSpace(executorProfileID) != "")
 	if opts.ceilingEntryBinding != nil {
 		ctx = withCeilingEntryBinding(ctx, opts.ceilingEntryBinding)
@@ -4250,6 +4255,9 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 	dbTask, err := s.repo.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("failed to get task: %w", err)
+	}
+	if dbTask, err = s.refreshLinearRequirement(ctx, dbTask); err != nil {
+		return err
 	}
 	derivedEntryBinding := false
 	replayWorkflowStepBinding := entryBinding != nil &&

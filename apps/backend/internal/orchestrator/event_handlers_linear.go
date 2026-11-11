@@ -23,6 +23,9 @@ type LinearService interface {
 	// self-heal flow when the watcher's bound agent profile has been
 	// soft-deleted.
 	DisableIssueWatchWithError(ctx context.Context, watchID, cause string) error
+	// GetTaskIssueSnapshot reads the live issue of a watch-linked task; it
+	// returns linear.ErrSourceLinkNotFound for any other task.
+	GetTaskIssueSnapshot(ctx context.Context, taskID string) (*linear.TaskIssueSnapshot, error)
 }
 
 // SetLinearService wires the Linear dedup helpers into the orchestrator so
