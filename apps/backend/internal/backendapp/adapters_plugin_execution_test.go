@@ -236,10 +236,11 @@ func TestExactExecutionAdapterClosesTheSessionWhenTheRuntimeConfirmsTheStop(t *t
 		stopErr   error
 		wantClose bool
 	}{
-		"runtime has no execution":        {execution: nil, wantClose: true},
-		"stop reports not found":          {execution: &lifecycle.AgentExecution{ID: "exec-x"}, stopErr: fmt.Errorf("gone: %w", agentruntime.ErrNotFound), wantClose: true},
-		"escalated cancel left it failed": {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusFailed}, stopErr: errors.New("cancel escalated"), wantClose: true},
-		"stop failed, still running":      {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusRunning}, stopErr: errors.New("stop failed"), wantClose: false},
+		"stop succeeded; escalation follows asynchronously": {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusRunning}, wantClose: true},
+		"runtime has no execution":                          {execution: nil, wantClose: true},
+		"stop reports not found":                            {execution: &lifecycle.AgentExecution{ID: "exec-x"}, stopErr: fmt.Errorf("gone: %w", agentruntime.ErrNotFound), wantClose: true},
+		"escalated cancel left it failed":                   {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusFailed}, stopErr: errors.New("cancel escalated"), wantClose: true},
+		"stop failed, still running":                        {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusRunning}, stopErr: errors.New("stop failed"), wantClose: false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

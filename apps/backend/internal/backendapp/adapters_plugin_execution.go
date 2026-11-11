@@ -121,6 +121,15 @@ func (a pluginsExactExecutionController) stopTaskRun(ctx context.Context, in plu
 		}
 		return false, normalizeExecutionControlError(err)
 	}
+	// An applied stop must end with the session out of its active state. The
+	// stopped-event handler deliberately leaves a WAITING_FOR_INPUT session alone
+	// and an escalated cancel follows seconds later, so the stop closes it itself,
+	// before reporting APPLIED; a closed session is terminal and later
+	// reconciliation cannot revive it. This is the exact stop only: a plain turn
+	// cancel never reaches here.
+	if _, err := a.orchestrator.CloseStoppedSession(ctx, in.SessionID, in.ExpectedExecutionID, closeReason); err != nil {
+		return false, status.Error(codes.Unavailable, "stopped session could not be closed")
+	}
 	return true, nil
 }
 
