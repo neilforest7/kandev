@@ -367,10 +367,18 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 	reason := "linear approval is no longer valid"
 	err = s.executionStopper.StopExecution(ctx, executionID, reason, true)
 	if errors.Is(err, runtimeapi.ErrNotFound) {
-		// The runtime knows no such execution: the process is gone although the
-		// session row still points at it (an ended turn, a restarted Host). That is
-		// a confirmed stop. Record it on the session so the watchdog stops
-		// retrying and exact stop waiters see the session leave its active state.
+		// A waiting session normally has no runtime execution between turns, so
+		// "not found" alone proves nothing. It is a confirmed stop only when the
+		// refusal itself is definitive; an unavailable bridge, a malformed reply or
+		// an unreadable check must never close a healthy session.
+		if !definitiveRefusal(admissionErr) {
+			s.logger.Debug("linear execution watchdog: no runtime execution, refusal is not definitive; retrying next tick",
+				zap.String("session_id", session.ID), zap.String("execution_id", executionID),
+				zap.String("admission_error", admissionErr.Error()))
+			return
+		}
+		// Record the stop on the session so the watchdog stops retrying and exact
+		// stop waiters see the session leave its active state.
 		if markErr := s.sessions.UpdateTaskSessionState(ctx, session.ID, models.TaskSessionStateCancelled, "execution no longer exists: "+reason); markErr != nil {
 			s.logger.Warn("linear execution watchdog: could not record the confirmed stop",
 				zap.String("session_id", session.ID), zap.String("execution_id", executionID), zap.Error(markErr))
@@ -393,6 +401,14 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 		zap.String("session_id", session.ID),
 		zap.String("execution_id", executionID),
 		zap.String("admission_error", admissionErr.Error()))
+}
+
+// definitiveRefusal reports a bridge refusal that states a decision. The
+// bridge's own "unavailable" reason is an internal failure reported as a denial,
+// so it is not one.
+func definitiveRefusal(err error) bool {
+	var denied *execadmission.Denied
+	return errors.As(err, &denied) && denied.Reason != "unavailable"
 }
 
 // linearExecutionWatchdogInterval keeps the admission freshness window short

@@ -336,6 +336,33 @@ func TestLinearExecutionWatchdogTreatsAnUnknownExecutionAsConfirmedStop(t *testi
 	require.Equal(t, []string{"execution-gone"}, stopper.executions, "a confirmed stop is not retried")
 }
 
+// A healthy waiting session has no runtime execution between turns. While the
+// bridge answers garbage or says "unavailable" the watchdog fails closed but
+// must not close it.
+func TestLinearExecutionWatchdogKeepsAWaitingSessionWhenTheRefusalIsNotDefinitive(t *testing.T) {
+	for name, reply := range map[string]string{
+		"malformed":   `not json`,
+		"unavailable": `{"approved":false,"reason":"unavailable"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newLinearGateFixture(t)
+			require.NoError(t, fixture.admit(gateProfile(t, "model", "agent")))
+			ctx := context.Background()
+			require.NoError(t, fixture.repo.UpsertExecutorRunning(ctx, &models.ExecutorRunning{
+				TaskID: fixture.childID, SessionID: fixture.sessionID, AgentExecutionID: "execution-idle", Status: models.ExecutorRunningStatusRunning,
+			}))
+			require.NoError(t, fixture.repo.UpdateTaskSessionState(ctx, fixture.sessionID, models.TaskSessionStateWaitingForInput, ""))
+			fixture.setReply(reply)
+			stopper := &recordingExecutionStopper{fail: fmt.Errorf("execution not found: %w", runtimeapi.ErrNotFound)}
+			fixture.svc.executionStopper = stopper
+			fixture.svc.runLinearExecutionWatchdog(ctx)
+			session, err := fixture.repo.GetTaskSession(ctx, fixture.sessionID)
+			require.NoError(t, err)
+			require.Equal(t, models.TaskSessionStateWaitingForInput, session.State)
+		})
+	}
+}
+
 func TestLinearExecutionWatchdogNeverStopsBySessionWhenExecutionIDIsUnknown(t *testing.T) {
 	fixture := newLinearGateFixture(t)
 	profile := gateProfile(t, "model", "agent")
