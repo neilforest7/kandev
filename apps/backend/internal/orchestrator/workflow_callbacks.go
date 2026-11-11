@@ -370,7 +370,8 @@ func (c *autoStartAgentCallback) queueStepPromptIfBusy(
 	if err != nil {
 		return false, fmt.Errorf("load task for queued auto-start: %w", err)
 	}
-	if task, err = c.svc.refreshLinearRequirement(ctx, task); err != nil {
+	task, requirementDigest, err := c.svc.refreshLinearRequirement(ctx, task)
+	if err != nil {
 		return false, err
 	}
 	if err := c.svc.withWorkflowAutoStartInputAdmission(ctx, session, step, true, func() error {
@@ -381,9 +382,12 @@ func (c *autoStartAgentCallback) queueStepPromptIfBusy(
 			return fmt.Errorf("build workflow prompt for queued auto-start: %w", err)
 		}
 		planMode := step.HasOnEnterAction(wfmodels.OnEnterEnablePlanMode)
-		return c.svc.autoStartStepPromptWithPromptContext(
+		if err := c.svc.autoStartStepPromptWithPromptContext(
 			ctx, task.ID, session, step, prompt, planMode, true, handoffOnce, promptReferenceContext,
-		)
+		); err != nil {
+			return err
+		}
+		return c.svc.stampLinearRequirement(ctx, session.ID, requirementDigest)
 	}); err != nil {
 		return false, fmt.Errorf("queue auto-start prompt: %w", err)
 	}

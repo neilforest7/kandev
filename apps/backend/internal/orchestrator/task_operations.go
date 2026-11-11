@@ -1078,6 +1078,11 @@ func (s *Service) startCreatedSession(
 	if err := s.validateClaimedCeilingBinding(ctx, taskID, options.ceilingEntryBinding); err != nil {
 		return nil, err
 	}
+	// Admission and profile checks are behind us: this is the requirement the
+	// session is about to be sent.
+	if err := s.stampLinearRequirement(ctx, sessionID, linearRequirementDigestFromContext(ctx)); err != nil {
+		return nil, err
+	}
 
 	executorID := session.ExecutorID
 
@@ -1721,7 +1726,7 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 		ctx = withInitialPromptSubmission(ctx, submission)
 	}
 
-	prompt, err := s.refreshLinearRequirementForStart(ctx, taskID, prompt)
+	ctx, prompt, err := s.refreshLinearRequirementForStart(ctx, taskID, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -2174,6 +2179,9 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 		if err := s.validateClaimedCeilingBinding(ctx, taskID, opts.ceilingEntryBinding); err != nil {
 			return nil, failPreparedLaunch(err)
 		}
+	}
+	if err := s.stampLinearRequirement(ctx, sessionID, linearRequirementDigestFromContext(ctx)); err != nil {
+		return nil, failPreparedLaunch(err)
 	}
 	initialTurnID, initialTurnCreated := s.startTurnForSessionWithOwnership(ctx, sessionID)
 	if claimedCeilingBinding {
@@ -4256,7 +4264,8 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 	if err != nil {
 		return fmt.Errorf("failed to get task: %w", err)
 	}
-	if dbTask, err = s.refreshLinearRequirement(ctx, dbTask); err != nil {
+	dbTask, requirementDigest, err := s.refreshLinearRequirement(ctx, dbTask)
+	if err != nil {
 		return err
 	}
 	derivedEntryBinding := false
@@ -4314,6 +4323,9 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 		return fmt.Errorf("failed to build workflow prompt: %w", err)
 	}
 
+	if err := s.stampLinearRequirement(ctx, sessionID, requirementDigest); err != nil {
+		return err
+	}
 	if err := s.ensureSessionRunningWithBinding(ctx, sessionID, session, launchOriginAutomatic, entryBinding); err != nil {
 		return err
 	}
