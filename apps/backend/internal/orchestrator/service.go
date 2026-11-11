@@ -1255,6 +1255,8 @@ type Service struct {
 	// taskLaunchRecoveryTasks is the task-service seam used by the same action
 	// for exact base-branch writes, remote-branch validation, and terminal moves.
 	taskLaunchRecoveryTasks taskLaunchRecoveryTaskService
+	// linearRequirementTasks persists Linear requirement refreshes (see linear_requirement.go).
+	linearRequirementTasks linearRequirementTaskService
 	// taskLaunchRecoveryRepo carries the repository reads and repository-default
 	// writes that are outside sessionExecutorStore's common contract.
 	taskLaunchRecoveryRepo taskLaunchRecoveryRepository

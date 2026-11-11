@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	runtimeapi "github.com/kandev/kandev/internal/agent/runtime"
 	"github.com/kandev/kandev/internal/execadmission"
 	"github.com/kandev/kandev/internal/task/models"
 	"go.uber.org/zap"
@@ -364,7 +365,31 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 		return
 	}
 	reason := "linear approval is no longer valid"
-	if err := s.executionStopper.StopExecution(ctx, executionID, reason, true); err != nil {
+	err = s.executionStopper.StopExecution(ctx, executionID, reason, true)
+	if errors.Is(err, runtimeapi.ErrNotFound) {
+		// A waiting session normally has no runtime execution between turns, so
+		// "not found" alone proves nothing. It is a confirmed stop only when the
+		// refusal itself is definitive; an unavailable bridge, a malformed reply or
+		// an unreadable check must never close a healthy session.
+		if !definitiveRefusal(admissionErr) {
+			s.logger.Debug("linear execution watchdog: no runtime execution, refusal is not definitive; retrying next tick",
+				zap.String("session_id", session.ID), zap.String("execution_id", executionID),
+				zap.String("admission_error", admissionErr.Error()))
+			return
+		}
+		// Record the stop on the session so the watchdog stops retrying and exact
+		// stop waiters see the session leave its active state.
+		if markErr := s.sessions.UpdateTaskSessionState(ctx, session.ID, models.TaskSessionStateCancelled, "execution no longer exists: "+reason); markErr != nil {
+			s.logger.Warn("linear execution watchdog: could not record the confirmed stop",
+				zap.String("session_id", session.ID), zap.String("execution_id", executionID), zap.Error(markErr))
+			return
+		}
+		s.logger.Info("linear execution watchdog: execution is gone, session closed",
+			zap.String("session_id", session.ID), zap.String("execution_id", executionID),
+			zap.String("admission_error", admissionErr.Error()))
+		return
+	}
+	if err != nil {
 		s.logger.Warn("linear execution watchdog: stop was not confirmed",
 			zap.String("session_id", session.ID),
 			zap.String("execution_id", executionID),
@@ -376,6 +401,24 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 		zap.String("session_id", session.ID),
 		zap.String("execution_id", executionID),
 		zap.String("admission_error", admissionErr.Error()))
+}
+
+// definitiveReasons are the bridge refusals that state a final decision about
+// the work: the issue is canceled, completed or out of scope, the requirement it
+// was approved for changed, or the plan was superseded, revoked or rejected.
+// Every other reason (paused, unavailable, no-approval, not-approved,
+// unconfirmed-answer, origin-session, profile-changed, ...) is a hold, a wait or
+// an internal failure and is not listed on purpose.
+var definitiveReasons = map[string]bool{
+	"issue-canceled": true, "issue-closed": true, "stale-source": true, "stale-requirement": true,
+	"plan-superseded": true, "revoked": true, "rejected": true,
+}
+
+// definitiveRefusal reports a bridge refusal that is a final decision, so a
+// session whose execution the runtime no longer knows may be closed.
+func definitiveRefusal(err error) bool {
+	var denied *execadmission.Denied
+	return errors.As(err, &denied) && definitiveReasons[denied.Reason]
 }
 
 // linearExecutionWatchdogInterval keeps the admission freshness window short

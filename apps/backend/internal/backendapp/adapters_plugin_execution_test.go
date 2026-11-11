@@ -2,12 +2,16 @@ package backendapp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	agentruntime "github.com/kandev/kandev/internal/agent/runtime"
 	"github.com/kandev/kandev/internal/agent/runtime/lifecycle"
 	"github.com/kandev/kandev/internal/orchestrator"
 	"github.com/kandev/kandev/internal/task/models"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
 	"github.com/kdlbs/kandev/pluginsdk"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -46,6 +50,13 @@ type exactExecutionOrchestratorFake struct {
 	recoverCalls int
 	ensureCalls  int
 	stopCalls    []string
+	stopErr      error
+	closeCalls   []string
+}
+
+func (f *exactExecutionOrchestratorFake) CloseStoppedSession(_ context.Context, sessionID, executionID, _ string) (bool, error) {
+	f.closeCalls = append(f.closeCalls, sessionID+"/"+executionID)
+	return true, nil
 }
 
 func (f *exactExecutionOrchestratorFake) EnsureSession(_ context.Context, taskID string, _ ...orchestrator.EnsureSessionOptions) (*orchestrator.EnsureSessionResponse, error) {
@@ -60,7 +71,7 @@ func (f *exactExecutionOrchestratorFake) RecoverSession(context.Context, string,
 
 func (f *exactExecutionOrchestratorFake) StopExecution(_ context.Context, executionID, _ string, _ bool) error {
 	f.stopCalls = append(f.stopCalls, executionID)
-	return nil
+	return f.stopErr
 }
 
 type exactExecutionLifecycleFake struct {
@@ -197,5 +208,53 @@ func TestExactExecutionAdapterDoesNotRecoverManuallyCancelledSession(t *testing.
 	}
 	if torch.recoverCalls != 0 {
 		t.Fatalf("orchestrator recover calls = %d, want zero", torch.recoverCalls)
+	}
+}
+
+// An exact stop of execution X ends with the session out of its active state
+// once the runtime confirms X is gone (not found) or failed (an escalated
+// cancel that never acknowledges); a stop that fails for any other reason stays
+// an error and closes nothing.
+func TestExactExecutionAdapterClosesTheSessionWhenTheRuntimeConfirmsTheStop(t *testing.T) {
+	updatedAt := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	command := pluginsdk.ExactTaskExecutionCommand{
+		WorkspaceID: "workspace-1", TaskID: "task-1", SessionID: "session-1",
+		ExpectedSessionResourceVersion: updatedAt.Format(time.RFC3339Nano), ExpectedExecutionID: "exec-x",
+	}
+	build := func(torch *exactExecutionOrchestratorFake, execution *lifecycle.AgentExecution) pluginsExactExecutionController {
+		return pluginsExactExecutionController{
+			tasks: exactExecutionTaskFake{
+				task:    &models.Task{ID: "task-1", WorkspaceID: "workspace-1"},
+				session: &models.TaskSession{ID: "session-1", TaskID: "task-1", UpdatedAt: updatedAt},
+			},
+			orchestrator: torch,
+			lifecycle:    exactExecutionLifecycleFake{execution: execution},
+		}
+	}
+	cases := map[string]struct {
+		execution *lifecycle.AgentExecution
+		stopErr   error
+		wantClose bool
+	}{
+		"stop succeeded; escalation follows asynchronously": {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusRunning}, wantClose: true},
+		"runtime has no execution":                          {execution: nil, wantClose: true},
+		"stop reports not found":                            {execution: &lifecycle.AgentExecution{ID: "exec-x"}, stopErr: fmt.Errorf("gone: %w", agentruntime.ErrNotFound), wantClose: true},
+		"escalated cancel left it failed":                   {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusFailed}, stopErr: errors.New("cancel escalated"), wantClose: true},
+		"stop failed, still running":                        {execution: &lifecycle.AgentExecution{ID: "exec-x", Status: v1.AgentStatusRunning}, stopErr: errors.New("stop failed"), wantClose: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			torch := &exactExecutionOrchestratorFake{stopErr: tc.stopErr}
+			stopped, err := build(torch, tc.execution).StopTaskRun(context.Background(), "", command)
+			if tc.wantClose {
+				if err != nil || !stopped || len(torch.closeCalls) != 1 || torch.closeCalls[0] != "session-1/exec-x" {
+					t.Fatalf("stopped=%v err=%v closes=%v, want a confirmed stop closing session-1/exec-x", stopped, err, torch.closeCalls)
+				}
+				return
+			}
+			if err == nil || stopped || len(torch.closeCalls) != 0 {
+				t.Fatalf("stopped=%v err=%v closes=%v, want an error and no close", stopped, err, torch.closeCalls)
+			}
+		})
 	}
 }

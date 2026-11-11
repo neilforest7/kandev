@@ -16,6 +16,7 @@ import (
 	"github.com/kandev/kandev/internal/plugins"
 	taskmodels "github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/repository/repoerrors"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
 	"github.com/kdlbs/kandev/pluginsdk"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,6 +35,7 @@ type exactExecutionOrchestrator interface {
 	EnsureSession(context.Context, string, ...orchestrator.EnsureSessionOptions) (*orchestrator.EnsureSessionResponse, error)
 	RecoverSession(context.Context, string, string, string, ...string) (*orchestrator.LaunchSessionResponse, error)
 	StopExecution(context.Context, string, string, bool) error
+	CloseStoppedSession(ctx context.Context, sessionID, executionID, reason string) (bool, error)
 }
 
 type pluginsExactExecutionController struct {
@@ -100,17 +102,48 @@ func (a pluginsExactExecutionController) stopTaskRun(ctx context.Context, in plu
 	if !exactTimeVersion(session.UpdatedAt, in.ExpectedSessionResourceVersion) {
 		return false, status.Error(codes.Aborted, "session version changed")
 	}
+	const closeReason = "execution no longer exists: plugin_exact_stop"
 	execution, found := a.lifecycle.GetExecutionBySessionID(in.SessionID)
 	if !found {
-		return false, nil
+		// The runtime knows no execution for the session. If the session row still
+		// points at the one this request names, that is a confirmed stop.
+		return a.orchestrator.CloseStoppedSession(ctx, in.SessionID, in.ExpectedExecutionID, closeReason)
 	}
 	if execution.ID != in.ExpectedExecutionID {
 		return false, status.Error(codes.Aborted, "execution generation changed")
 	}
 	if err := a.orchestrator.StopExecution(ctx, in.ExpectedExecutionID, "plugin_exact_stop", false); err != nil {
+		// An escalated cancel leaves a failed execution that never acknowledges
+		// the stop, and a vanished one reports not-found. Either way the runtime has
+		// confirmed the named execution is not running: close its session.
+		if runtimeConfirmsStopped(a.lifecycle, in.SessionID, in.ExpectedExecutionID, err) {
+			return a.orchestrator.CloseStoppedSession(ctx, in.SessionID, in.ExpectedExecutionID, closeReason)
+		}
 		return false, normalizeExecutionControlError(err)
 	}
+	// An applied stop must end with the session out of its active state. The
+	// stopped-event handler deliberately leaves a WAITING_FOR_INPUT session alone
+	// and an escalated cancel follows seconds later, so the stop closes it itself,
+	// before reporting APPLIED; a closed session is terminal and later
+	// reconciliation cannot revive it. This is the exact stop only: a plain turn
+	// cancel never reaches here.
+	if _, err := a.orchestrator.CloseStoppedSession(ctx, in.SessionID, in.ExpectedExecutionID, closeReason); err != nil {
+		return false, status.Error(codes.Unavailable, "stopped session could not be closed")
+	}
 	return true, nil
+}
+
+// runtimeConfirmsStopped reports whether, after a failed stop, the runtime says
+// the named execution is gone or has failed.
+func runtimeConfirmsStopped(lifecycle agentruntime.SessionExecutionControl, sessionID, executionID string, stopErr error) bool {
+	if errors.Is(stopErr, agentruntime.ErrNotFound) {
+		return true
+	}
+	current, found := lifecycle.GetExecutionBySessionID(sessionID)
+	if !found || current.ID != executionID {
+		return true
+	}
+	return current.Status == v1.AgentStatusFailed
 }
 
 func (a pluginsExactExecutionController) RecoverSession(ctx context.Context, installationID string, in pluginsdk.ExactSessionRecoveryCommand) (pluginsdk.ExactTaskRunResult, error) {

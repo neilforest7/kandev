@@ -203,6 +203,7 @@ func provideOrchestrator(
 	// the manager to enforce the per-automation retention window.
 	orchestratorSvc.SetWorktreeManager(lifecycleMgr.WorktreeManager())
 	orchestratorSvc.SetTaskLaunchRecoveryService(taskSvc)
+	orchestratorSvc.SetLinearRequirementTaskService(taskSvc)
 	orchestratorSvc.SetWorkspaceRecoveryErrorReporter(taskSvc)
 	orchestratorSvc.SetWorkspaceRecoveryStatusReader(taskSvc)
 
@@ -1013,6 +1014,10 @@ func (a *sentryServiceAdapter) DisableIssueWatchWithError(ctx context.Context, w
 
 func (a *linearServiceAdapter) DisableIssueWatchWithError(ctx context.Context, watchID, cause string) error {
 	return a.svc.Store().DisableIssueWatchWithError(ctx, watchID, cause)
+}
+
+func (a *linearServiceAdapter) GetTaskIssueSnapshot(ctx context.Context, taskID string) (*linearpkg.TaskIssueSnapshot, error) {
+	return a.svc.GetTaskIssueSnapshot(ctx, taskID)
 }
 
 // profileLookupAdapter satisfies orchestrator.ProfileLookup by delegating to

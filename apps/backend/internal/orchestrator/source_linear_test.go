@@ -20,6 +20,8 @@ type fakeLinearService struct {
 	gotReservationIDs []string
 	gotRelease        []string
 	gotDisable        []string
+	snapshot          *linear.TaskIssueSnapshot
+	snapshotErr       error
 }
 
 func (f *fakeLinearService) ReserveIssueWatchTask(_ context.Context, watchID string, issue *linear.LinearIssue) (bool, error) {
@@ -44,6 +46,10 @@ func (f *fakeLinearService) ReleaseIssueWatchTask(_ context.Context, watchID, id
 func (f *fakeLinearService) DisableIssueWatchWithError(_ context.Context, watchID, cause string) error {
 	f.gotDisable = append(f.gotDisable, watchID+":"+cause)
 	return f.disableErr
+}
+
+func (f *fakeLinearService) GetTaskIssueSnapshot(_ context.Context, _ string) (*linear.TaskIssueSnapshot, error) {
+	return f.snapshot, f.snapshotErr
 }
 
 func sampleLinearEvent() *linear.NewLinearIssueEvent {

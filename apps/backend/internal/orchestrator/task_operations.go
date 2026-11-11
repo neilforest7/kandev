@@ -961,7 +961,7 @@ func (s *Service) startCreatedSession(
 
 	effectivePrompt := prompt
 	if effectivePrompt == "" && !options.skipTaskDescriptionFallback {
-		effectivePrompt = task.Description
+		effectivePrompt = launchDescription(ctx, task.Description)
 	}
 
 	// NOTE: on_turn_start is intentionally NOT processed here.
@@ -1076,6 +1076,11 @@ func (s *Service) startCreatedSession(
 		)
 	}
 	if err := s.validateClaimedCeilingBinding(ctx, taskID, options.ceilingEntryBinding); err != nil {
+		return nil, err
+	}
+	// Admission and profile checks are behind us: this is the requirement the
+	// session is about to be sent.
+	if err := s.stampLinearRequirement(ctx, sessionID, linearRequirementDigestFromContext(ctx)); err != nil {
 		return nil, err
 	}
 
@@ -1721,6 +1726,11 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 		ctx = withInitialPromptSubmission(ctx, submission)
 	}
 
+	ctx, prompt, err := s.refreshLinearRequirementForStart(ctx, taskID, prompt)
+	if err != nil {
+		return nil, err
+	}
+
 	ctx = executor.WithTaskRunnerProfileExplicit(ctx, strings.TrimSpace(executorProfileID) != "")
 	if opts.ceilingEntryBinding != nil {
 		ctx = withCeilingEntryBinding(ctx, opts.ceilingEntryBinding)
@@ -1956,7 +1966,7 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 	// Use provided prompt, fall back to task description
 	effectivePrompt := prompt
 	if effectivePrompt == "" {
-		effectivePrompt = task.Description
+		effectivePrompt = launchDescription(ctx, task.Description)
 	}
 
 	// Prepare session first so we have the sessionID for config context injection.
@@ -2169,6 +2179,9 @@ func (s *Service) startTask(ctx context.Context, taskID string, agentProfileID s
 		if err := s.validateClaimedCeilingBinding(ctx, taskID, opts.ceilingEntryBinding); err != nil {
 			return nil, failPreparedLaunch(err)
 		}
+	}
+	if err := s.stampLinearRequirement(ctx, sessionID, linearRequirementDigestFromContext(ctx)); err != nil {
+		return nil, failPreparedLaunch(err)
 	}
 	initialTurnID, initialTurnCreated := s.startTurnForSessionWithOwnership(ctx, sessionID)
 	if claimedCeilingBinding {
@@ -4251,6 +4264,10 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 	if err != nil {
 		return fmt.Errorf("failed to get task: %w", err)
 	}
+	dbTask, requirement, err := s.refreshLinearRequirement(ctx, dbTask)
+	if err != nil {
+		return err
+	}
 	derivedEntryBinding := false
 	replayWorkflowStepBinding := entryBinding != nil &&
 		ceilingEntryKindFromContext(ctx) == models.CeilingLaunchWorkflowStepEnsure
@@ -4306,6 +4323,9 @@ func (s *Service) StartSessionForWorkflowStep(ctx context.Context, taskID, sessi
 		return fmt.Errorf("failed to build workflow prompt: %w", err)
 	}
 
+	if err := s.stampLinearRequirement(ctx, sessionID, requirementDigestOf(requirement)); err != nil {
+		return err
+	}
 	if err := s.ensureSessionRunningWithBinding(ctx, sessionID, session, launchOriginAutomatic, entryBinding); err != nil {
 		return err
 	}
