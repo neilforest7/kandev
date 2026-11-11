@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	runtimeapi "github.com/kandev/kandev/internal/agent/runtime"
 	"github.com/kandev/kandev/internal/execadmission"
 	"github.com/kandev/kandev/internal/task/models"
 	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
@@ -307,6 +309,31 @@ func TestLinearExecutionWatchdogStopsOnlyTheObservedExecution(t *testing.T) {
 	fixture.svc.runLinearExecutionWatchdog(context.Background())
 	require.Equal(t, []string{"execution-observed", "execution-observed"}, stopper.executions)
 	require.Empty(t, stopper.sessions)
+}
+
+// The runtime no longer knows the execution the session row points at (the turn
+// ended, or the Host restarted): that is a confirmed stop. The session is closed,
+// so the watchdog stops retrying every tick and stop waiters see it leave its
+// active state; any other stop failure stays blocked and is retried.
+func TestLinearExecutionWatchdogTreatsAnUnknownExecutionAsConfirmedStop(t *testing.T) {
+	fixture := newLinearGateFixture(t)
+	require.NoError(t, fixture.admit(gateProfile(t, "model", "agent")))
+	ctx := context.Background()
+	require.NoError(t, fixture.repo.UpsertExecutorRunning(ctx, &models.ExecutorRunning{
+		TaskID: fixture.childID, SessionID: fixture.sessionID, AgentExecutionID: "execution-gone", Status: models.ExecutorRunningStatusRunning,
+	}))
+	require.NoError(t, fixture.repo.UpdateTaskSessionState(ctx, fixture.sessionID, models.TaskSessionStateWaitingForInput, ""))
+	fixture.setReply(`{"approved":false,"reason":"issue-canceled","approvalId":"approval-1","planVersion":"plan-7"}`)
+	stopper := &recordingExecutionStopper{fail: fmt.Errorf("execution not found: %w", runtimeapi.ErrNotFound)}
+	fixture.svc.executionStopper = stopper
+
+	fixture.svc.runLinearExecutionWatchdog(ctx)
+	session, err := fixture.repo.GetTaskSession(ctx, fixture.sessionID)
+	require.NoError(t, err)
+	require.Equal(t, models.TaskSessionStateCancelled, session.State)
+
+	fixture.svc.runLinearExecutionWatchdog(ctx)
+	require.Equal(t, []string{"execution-gone"}, stopper.executions, "a confirmed stop is not retried")
 }
 
 func TestLinearExecutionWatchdogNeverStopsBySessionWhenExecutionIDIsUnknown(t *testing.T) {

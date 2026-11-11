@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	runtimeapi "github.com/kandev/kandev/internal/agent/runtime"
 	"github.com/kandev/kandev/internal/execadmission"
 	"github.com/kandev/kandev/internal/task/models"
 	"go.uber.org/zap"
@@ -364,7 +365,23 @@ func (s *Service) stopRevokedLinearExecution(ctx context.Context, session *model
 		return
 	}
 	reason := "linear approval is no longer valid"
-	if err := s.executionStopper.StopExecution(ctx, executionID, reason, true); err != nil {
+	err = s.executionStopper.StopExecution(ctx, executionID, reason, true)
+	if errors.Is(err, runtimeapi.ErrNotFound) {
+		// The runtime knows no such execution: the process is gone although the
+		// session row still points at it (an ended turn, a restarted Host). That is
+		// a confirmed stop. Record it on the session so the watchdog stops
+		// retrying and exact stop waiters see the session leave its active state.
+		if markErr := s.sessions.UpdateTaskSessionState(ctx, session.ID, models.TaskSessionStateCancelled, "execution no longer exists: "+reason); markErr != nil {
+			s.logger.Warn("linear execution watchdog: could not record the confirmed stop",
+				zap.String("session_id", session.ID), zap.String("execution_id", executionID), zap.Error(markErr))
+			return
+		}
+		s.logger.Info("linear execution watchdog: execution is gone, session closed",
+			zap.String("session_id", session.ID), zap.String("execution_id", executionID),
+			zap.String("admission_error", admissionErr.Error()))
+		return
+	}
+	if err != nil {
 		s.logger.Warn("linear execution watchdog: stop was not confirmed",
 			zap.String("session_id", session.ID),
 			zap.String("execution_id", executionID),
