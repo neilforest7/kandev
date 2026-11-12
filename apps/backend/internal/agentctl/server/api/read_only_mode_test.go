@@ -90,3 +90,22 @@ func TestReadOnlySessionCannotReset(t *testing.T) {
 	resp := s.handleWSResetSession(context.Background(), req)
 	require.Equal(t, ws.MessageTypeError, resp.Type)
 }
+
+func TestClaudeReadOnlyEffortConfig(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.AgentType = "claude-acp"
+	s.cfg.McpProfile = &p.Context{ReadOnly: true}
+	native := &readOnlyConfigAdapter{}
+	s.procMgr.SetAdapterForTest(native)
+	req, _ := ws.NewRequest("effort", "agent.session.set_config_option", map[string]string{"config_id": "effort", "value": "medium"})
+	require.NotEqual(t, ws.MessageTypeError, s.handleWSSetConfigOption(t.Context(), req).Type)
+	require.Equal(t, "effort:medium", native.modelID)
+	for _, id := range []string{"model", "tools", "settingSources", "strictMcpConfig", "allowDangerouslySkipPermissions"} {
+		require.Error(t, s.validateReadOnlyConfigChange(id, "medium"))
+	}
+	for _, value := range []string{"", "default", " reset "} {
+		require.Error(t, s.validateReadOnlyConfigChange("effort", value))
+	}
+	s.cfg.AgentType = "codex-acp"
+	require.Error(t, s.validateReadOnlyConfigChange("effort", "medium"))
+}

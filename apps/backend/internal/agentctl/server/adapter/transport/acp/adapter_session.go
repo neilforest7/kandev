@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -1766,6 +1767,11 @@ func (a *Adapter) SetConfigOption(ctx context.Context, configID, value string) e
 	a.mu.RUnlock()
 	if !sessionActive {
 		return nil
+	}
+	if a.agentID == claudeAgentID && configID == "effort" && !slices.ContainsFunc(resp.ConfigOptions, func(option acp.SessionConfigOption) bool {
+		return option.Select != nil && string(option.Select.Id) == configID && string(option.Select.CurrentValue) == value
+	}) {
+		return fmt.Errorf("requested Claude effort %q was not confirmed by the agent", value)
 	}
 	if len(resp.ConfigOptions) > 0 {
 		a.emitAuthoritativeConfigOptionsWithPolicy(sessionID, configID, resp.ConfigOptions, cachedModels, false, settingsPolicy, generation)
