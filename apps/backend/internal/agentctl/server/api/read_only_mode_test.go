@@ -19,6 +19,24 @@ func TestReadOnlyModeRequiresMatchingProfile(t *testing.T) {
 	require.NoError(t, s.validateReadOnlyModeChange("agent"))
 }
 
+func TestClaudeReadOnlyModeGuard(t *testing.T) {
+	s := newTestServer(t)
+	native := &readOnlyConfigAdapter{}
+	s.procMgr.SetAdapterForTest(native)
+	s.cfg.AgentType = "claude-acp"
+	s.cfg.McpProfile = &p.Context{ReadOnly: true}
+	req, err := ws.NewRequest("plan", "agent.session.set_mode", map[string]string{"mode_id": "plan"})
+	require.NoError(t, err)
+	require.NotEqual(t, ws.MessageTypeError, s.handleWSSetMode(context.Background(), req).Type)
+	require.Equal(t, "plan", native.modeID)
+	for _, mode := range []string{"default", "acceptEdits", "auto", "bypassPermissions"} {
+		require.Error(t, s.validateReadOnlyModeChange(mode))
+	}
+	s.cfg.McpProfile.ReadOnly = false
+	require.Error(t, s.validateReadOnlyModeChange("plan"))
+	require.NoError(t, s.validateReadOnlyModeChange("default"))
+}
+
 type readOnlyConfigAdapter struct{ capableAgentAdapter }
 
 func (a *readOnlyConfigAdapter) SetConfigOption(_ context.Context, id, value string) error {

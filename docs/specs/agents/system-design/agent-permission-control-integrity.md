@@ -27,6 +27,10 @@ bypass-immune in a permissive mode, stay with the provider. This design makes
 Kandev's own layer honest and observable so a provider decision is attributable
 to the provider rather than to an unverifiable Kandev claim.
 
+This fork additionally restricts Claude ACP Plan profiles through a fixed native
+tool set and isolated settings. That stronger session contract is defined in
+[Claude read-only review](claude-readonly-review.md).
+
 ## Requirement mapping
 
 | Requirement | Design section |

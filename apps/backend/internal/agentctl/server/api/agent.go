@@ -20,6 +20,7 @@ import (
 	"github.com/kandev/kandev/internal/agentctl/server/process/probe"
 	"github.com/kandev/kandev/internal/agentctl/types"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
+	"github.com/kandev/kandev/internal/common/agentpermissions"
 	"github.com/kandev/kandev/internal/common/constants"
 	v1 "github.com/kandev/kandev/pkg/api/v1"
 	protocol "github.com/kandev/kandev/pkg/codexappserver"
@@ -1654,7 +1655,11 @@ func (s *Server) readOnlyMCPProfile() bool {
 }
 
 func (s *Server) validateReadOnlyModeChange(mode string) error {
-	if (mode == "read-only") != s.readOnlyMCPProfile() {
+	agentType := ""
+	if s.cfg != nil {
+		agentType = s.cfg.AgentType
+	}
+	if agentpermissions.IsReadOnly(agentType, mode) != s.readOnlyMCPProfile() {
 		return fmt.Errorf("changing read-only mode requires a new session")
 	}
 	return nil

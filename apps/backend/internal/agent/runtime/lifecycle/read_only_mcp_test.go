@@ -8,10 +8,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type readOnlyProfileResolver struct{ mode string }
+type readOnlyProfileResolver struct{ mode, agent string }
 
 func (r *readOnlyProfileResolver) ResolveProfile(_ context.Context, id string) (*AgentProfileInfo, error) {
-	return &AgentProfileInfo{ProfileID: id, AgentName: "codex-acp", Mode: r.mode}, nil
+	agent := r.agent
+	if agent == "" {
+		agent = "codex-acp"
+	}
+	return &AgentProfileInfo{ProfileID: id, AgentName: agent, Mode: r.mode}, nil
+}
+
+func TestClaudeReadOnlyLaunchAndBinding(t *testing.T) {
+	mgr := newTestManager(t)
+	mgr.profileResolver = &readOnlyProfileResolver{mode: "plan", agent: "claude-acp"}
+	ctx := context.Background()
+	_, err := mgr.Launch(ctx, &LaunchRequest{AgentProfileID: "profile", IsPassthrough: true})
+	require.ErrorContains(t, err, "passthrough")
+	profile := builtinDispatchProfile(p.PackageCore)
+	req := &LaunchRequest{AgentProfileID: "profile", McpProfile: &profile}
+	require.NoError(t, mgr.restrictReadOnlyMCPProfile(ctx, req))
+	require.True(t, req.McpProfile.ReadOnly)
+	execution := &AgentExecution{AgentProfileID: "profile"}
+	require.Error(t, mgr.verifyReadOnlyMCPProfile(ctx, execution))
+	encoded, err := p.MarshalBuiltinBinding(*req.McpProfile)
+	require.NoError(t, err)
+	execution.setMetadataValue(p.BuiltinBindingMetadataKey, encoded)
+	require.NoError(t, mgr.verifyReadOnlyMCPProfile(ctx, execution))
 }
 
 func TestReadOnlyBindingRejectsProfileChangesAndUnprovenHelper(t *testing.T) {

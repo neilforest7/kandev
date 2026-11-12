@@ -956,6 +956,20 @@ which option before delivery and rejects concurrent or replayed answers. It does
 environment values, headers, raw MCP arguments, or option metadata. See
 [Resolve a live agent permission request](automation-and-mcp.md#resolve-a-live-agent-permission-request).
 
+### Claude read-only review in this fork
+
+For a restricted Claude reviewer, create a structured **Claude ACP** profile
+with **Start mode: Plan**. This fork treats every Claude ACP Plan profile as
+read-only. The session exposes Read, Grep and Glob plus the injected read-only
+Kandev tools. Have the main agent prepare a diff file for the reviewer to read;
+the reviewer has no shell, Git, file-editing or subagent tools.
+
+These sessions ignore user, project and local Claude settings and use only
+Host-delivered MCP servers. Confirm provider authentication still works without
+those settings. Native Plan must be confirmed before the first prompt, and
+changing to an unrestricted mode requires a new session. CLI passthrough and
+external MCP servers are rejected.
+
 ### Devin permissions and sandbox
 
 New Devin profiles start in **Smart** mode with **Devin sandbox** set to

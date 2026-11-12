@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	settingsmodels "github.com/kandev/kandev/internal/agent/settings/models"
+	"github.com/kandev/kandev/internal/common/agentpermissions"
 )
 
 // DefaultPermissionMode is reported when the profile requests no explicit ACP
@@ -191,7 +192,9 @@ func (r Resolved) EffectiveProfile() (Profile, error) {
 		return Profile{}, err
 	}
 	mode := r.Mode
-	if mode == "" {
+	if agentpermissions.IsReadOnly(r.Agent, mode) {
+		mode = "read-only"
+	} else if mode == "" {
 		mode = DefaultPermissionMode
 	}
 	return Profile{

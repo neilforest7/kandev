@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kandev/kandev/internal/agent/mcpconfig"
+	"github.com/kandev/kandev/internal/common/agentpermissions"
 	p "github.com/kandev/kandev/internal/mcp/profile"
 	"github.com/kandev/kandev/internal/task/models"
 )
@@ -26,12 +27,12 @@ func (e *Executor) PrepareTaskSessionMCPProfile(ctx context.Context, taskID stri
 		return profile, err
 	}
 	if session != nil {
-		mode, hasProfile, modeErr := e.sessionProfileMode(ctx, session)
+		readOnly, hasProfile, modeErr := e.sessionProfileReadOnly(ctx, session)
 		if modeErr != nil {
 			return p.Context{}, modeErr
 		}
 		if hasProfile {
-			profile.ReadOnly = mode == "read-only"
+			profile.ReadOnly = readOnly
 		}
 	}
 	providers, err := e.resolveTaskMCPProviders(ctx, taskID)
@@ -82,32 +83,32 @@ func (e *Executor) launchMCPProfile(ctx context.Context, taskID string, session 
 	return e.PrepareTaskSessionMCPProfile(ctx, taskID, session, startAgent)
 }
 
-// sessionProfileMode resolves the session's agent profile mode at the MCP trust
+// sessionProfileReadOnly resolves the session's restriction at the MCP trust
 // boundary. A missing resolver, a resolution error or an absent profile with a
 // non-empty profile id is a refusal, never a writable fallback. A session with
 // no profile id keeps the pre-existing base-profile behavior.
-func (e *Executor) sessionProfileMode(ctx context.Context, session *models.TaskSession) (string, bool, error) {
+func (e *Executor) sessionProfileReadOnly(ctx context.Context, session *models.TaskSession) (bool, bool, error) {
 	if session == nil {
-		return "", false, nil
+		return false, false, nil
 	}
 	profileID := session.ExecutionProfileID
 	if profileID == "" {
 		profileID = session.AgentProfileID
 	}
 	if profileID == "" {
-		return "", false, nil
+		return false, false, nil
 	}
 	if e.agentManager == nil {
-		return "", true, fmt.Errorf("resolve agent profile %q: agent manager is unavailable", profileID)
+		return false, true, fmt.Errorf("resolve agent profile %q: agent manager is unavailable", profileID)
 	}
 	info, err := e.agentManager.ResolveAgentProfile(ctx, profileID)
 	if err != nil {
-		return "", true, fmt.Errorf("resolve agent profile %q: %w", profileID, err)
+		return false, true, fmt.Errorf("resolve agent profile %q: %w", profileID, err)
 	}
 	if info == nil {
-		return "", true, fmt.Errorf("resolve agent profile %q: profile is unavailable", profileID)
+		return false, true, fmt.Errorf("resolve agent profile %q: profile is unavailable", profileID)
 	}
-	return info.Mode, true, nil
+	return agentpermissions.IsReadOnly(info.AgentName, info.Mode), true, nil
 }
 
 // prepareExistingWorkspaceBuiltin binds the admitted package snapshot before an

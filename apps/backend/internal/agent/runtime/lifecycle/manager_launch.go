@@ -25,6 +25,7 @@ import (
 	"github.com/kandev/kandev/internal/agentctl/acpcompat"
 	agentctltypes "github.com/kandev/kandev/internal/agentctl/types"
 	"github.com/kandev/kandev/internal/agentruntime"
+	"github.com/kandev/kandev/internal/common/agentpermissions"
 	"github.com/kandev/kandev/internal/common/launchwrapper"
 	"github.com/kandev/kandev/internal/common/mcpmode"
 	"github.com/kandev/kandev/internal/common/subproc"
@@ -2004,7 +2005,7 @@ func (m *Manager) restrictReadOnlyMCPProfile(ctx context.Context, req *LaunchReq
 		return nil
 	}
 	_, profile, err := m.resolveAgentProfile(ctx, req)
-	if err != nil || profile == nil || profile.Mode != "read-only" {
+	if err != nil || profile == nil || !agentpermissions.IsReadOnly(profile.AgentName, profile.Mode) {
 		return nil
 	}
 	if req.IsPassthrough || profile.CLIPassthrough {

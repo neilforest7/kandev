@@ -25,6 +25,19 @@ func resolved() Resolved {
 	}
 }
 
+func TestClaudeReadOnlyEffectiveProfile(t *testing.T) {
+	r := resolved()
+	r.Agent, r.Mode = "claude-acp", "plan"
+	profile, err := r.EffectiveProfile()
+	require.NoError(t, err)
+	require.Equal(t, "read-only", profile.PermissionMode)
+	require.Equal(t, "plan", r.Mode, "the fingerprint retains the native mode")
+	r.Mode = "read-only"
+	other, err := r.Digest()
+	require.NoError(t, err)
+	require.NotEqual(t, profile.ConfigDigest, other)
+}
+
 func TestDigestIsStableAndCoversPrivilegeDimensions(t *testing.T) {
 	base := resolved()
 	digest, err := base.Digest()
