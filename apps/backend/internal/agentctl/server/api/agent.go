@@ -1670,7 +1670,8 @@ func (s *Server) validateReadOnlyModeChange(mode string) error {
 // which would drop back to a provider default the profile never approved, are
 // refused.
 func (s *Server) validateReadOnlyConfigChange(configID, value string) error {
-	if configID != "reasoning_effort" {
+	claudeEffort := s.cfg != nil && s.cfg.AgentType == "claude-acp" && configID == "effort"
+	if configID != "reasoning_effort" && !claudeEffort {
 		return fmt.Errorf("read-only session cannot change this configuration option")
 	}
 	switch strings.ToLower(strings.TrimSpace(value)) {

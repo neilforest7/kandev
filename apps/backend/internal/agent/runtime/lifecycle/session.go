@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -674,10 +675,13 @@ func (sm *SessionManager) InitializeAndPromptWithLayers(
 	// and the original-config snapshot could disagree with reality).
 	profileModel = effectiveModel.model
 	runtimeModel = ""
-	finalConfigID, profileModelApplied, profileConfigOptionsApplied := sm.applyProfileSessionLayers(
+	finalConfigID, profileModelApplied, profileConfigOptionsApplied, err := sm.applyProfileSessionLayers(
 		ctx, execution, result.SessionID, profileModel, profileConfigOptions,
 		effectiveModel.handled, effectiveModel.appliedModel,
 	)
+	if err != nil {
+		return err
+	}
 
 	// Capture the effective profile state before runtime overrides or workflow
 	// launch settings are applied. This event is intentionally separate from
@@ -688,6 +692,9 @@ func (sm *SessionManager) InitializeAndPromptWithLayers(
 		ctx, execution, result.SessionID, finalConfigID,
 		profileModelApplied, profileMode, runtimeModel, runtimeMode, runtimeConfigOptions,
 	)
+	if execution.AgentID == claudeACPAgentID && slices.Contains(runtimeFailures, "effort") {
+		return fmt.Errorf("apply runtime Claude effort before the first prompt failed")
+	}
 	requestedMode := runtimeMode
 	if requestedMode == "" {
 		requestedMode = profileMode
@@ -923,11 +930,14 @@ func (sm *SessionManager) applyProfileSessionLayers(
 	profileConfigOptions map[string]string,
 	modelPolicyHandled bool,
 	policyAppliedModel string,
-) (string, string, map[string]string) {
+) (string, string, map[string]string, error) {
 	client, releaseClient := execution.AcquireAgentCtlClient()
 	defer releaseClient()
 	if client == nil {
-		return "", "", nil
+		if execution.AgentID == claudeACPAgentID && profileConfigOptions["effort"] != "" {
+			return "", "", nil, fmt.Errorf("apply profile Claude effort before the first prompt: agentctl client is unavailable")
+		}
+		return "", "", nil, nil
 	}
 	finalConfigID := ""
 	profileModelApplied := ""
@@ -961,6 +971,10 @@ func (sm *SessionManager) applyProfileSessionLayers(
 	for _, configID := range sortedConfigOptionKeys(sanitizedOptions) {
 		value := sanitizedOptions[configID]
 		if err := setStartupSessionConfigOption(ctx, execution, client, configID, value); err != nil {
+			if execution.AgentID == claudeACPAgentID && configID == "effort" {
+				return finalConfigID, profileModelApplied, profileConfigOptionsApplied,
+					fmt.Errorf("apply profile Claude effort %q before the first prompt: %w", value, err)
+			}
 			sm.logger.Warn("failed to set profile config option via ACP",
 				zap.String("execution_id", execution.ID), zap.String("config_id", configID),
 				zap.String("value", value), zap.Error(err))
@@ -971,7 +985,7 @@ func (sm *SessionManager) applyProfileSessionLayers(
 		sm.logger.Info("set profile config option on ACP session",
 			zap.String("execution_id", execution.ID), zap.String("config_id", configID), zap.String("value", value))
 	}
-	return finalConfigID, profileModelApplied, profileConfigOptionsApplied
+	return finalConfigID, profileModelApplied, profileConfigOptionsApplied, nil
 }
 
 func (sm *SessionManager) applyRuntimeSessionLayers(
