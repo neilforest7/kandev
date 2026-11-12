@@ -14,6 +14,9 @@ const DefaultPermissionTimeout = 5 * time.Minute
 // Config holds configuration for creating transport adapters.
 // This is passed to transport adapters by the factory.
 type Config struct {
+	// ReadOnly is the restriction from the Host-bound MCP profile.
+	ReadOnly bool
+
 	// WorkDir is the working directory for the agent
 	WorkDir string
 

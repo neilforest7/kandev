@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/kandev/kandev/internal/common/agentpermissions"
 	p "github.com/kandev/kandev/internal/mcp/profile"
 	mcpscope "github.com/kandev/kandev/internal/mcp/scope"
 )
@@ -46,7 +47,7 @@ func (m *Manager) verifyReadOnlyMCPProfile(ctx context.Context, execution *Agent
 		}
 		return nil
 	}
-	if (profile.Mode == "read-only") != restricted {
+	if agentpermissions.IsReadOnly(profile.AgentName, profile.Mode) != restricted {
 		return errors.New("read-only mode requires a matching bound MCP profile and a new session for changes")
 	}
 	return nil

@@ -87,6 +87,19 @@ func TestBuiltinProfileReadOnlyComesFromResolvedAgentProfile(t *testing.T) {
 	require.NotNil(t, profile.BuiltinPackages)
 }
 
+func TestClaudeReadOnlyMCPBinding(t *testing.T) {
+	repo := newMockRepository()
+	repo.tasks["task"] = &models.Task{ID: "task", WorkspaceID: "workspace"}
+	session := &models.TaskSession{ID: "session", TaskID: "task", AgentProfileID: "profile"}
+	agent := &mockAgentManager{resolveAgentProfileFunc: func(_ context.Context, id string) (*AgentProfileInfo, error) {
+		return &AgentProfileInfo{ProfileID: id, AgentName: "claude-acp", Mode: "plan"}, nil
+	}}
+	exec := newTestExecutor(t, agent, repo)
+	profile, err := exec.PrepareTaskSessionMCPProfile(context.Background(), "task", session, true)
+	require.NoError(t, err)
+	require.True(t, profile.ReadOnly)
+}
+
 func TestBuiltinFreshResumeAndModelSwitchResolveCurrentPolicy(t *testing.T) {
 	repo := newMockRepository()
 	task := &models.Task{ID: "task", WorkspaceID: "workspace"}

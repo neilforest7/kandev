@@ -8,6 +8,7 @@ import (
 	"github.com/kandev/kandev/internal/agentctl/server/config"
 	"github.com/kandev/kandev/internal/agentctl/types/streams"
 	p "github.com/kandev/kandev/internal/mcp/profile"
+	"github.com/kandev/kandev/pkg/agent"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,6 +21,25 @@ func TestReadOnlyPermissionRejectsNativeApproval(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, response.Cancelled)
+}
+
+func TestClaudeReadOnlyAdapterPolicyAndPermissionRefusal(t *testing.T) {
+	mgr := newTestManager(t, t.TempDir())
+	mgr.cfg.AgentType = "claude-acp"
+	mgr.cfg.Protocol = agent.ProtocolACP
+	mgr.cfg.McpProfile = &p.Context{ReadOnly: true}
+	mgr.cfg.AutoApprovePermissions = true
+	require.NoError(t, mgr.buildAdapterConfig())
+	t.Cleanup(func() { _ = mgr.adapter.Close() })
+	require.True(t, mgr.adapterCfg.ToSharedConfig().ReadOnly)
+	for _, name := range []string{"Write", "Edit", "Bash", "NotebookEdit", "Task", "WebFetch"} {
+		response, err := mgr.handlePermissionRequest(t.Context(), &adapter.PermissionRequest{
+			ToolName: &name,
+			Options:  []adapter.PermissionOption{{OptionID: "allow", Kind: streams.PermissionOptionKindAllowOnce}},
+		})
+		require.NoError(t, err)
+		require.True(t, response.Cancelled, name)
+	}
 }
 
 func TestReadOnlyRejectsExistingExternalMCP(t *testing.T) {
