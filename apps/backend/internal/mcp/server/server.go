@@ -711,10 +711,13 @@ func (s *Server) wrapSensitiveHandler(toolName string, handler server.ToolHandle
 func (s *Server) wrapHandlerWithArgumentLogging(toolName string, handler server.ToolHandlerFunc, logArguments bool) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		s.mu.RLock()
-		denied := s.profile.ReadOnly && !readOnlyToolAllowed(toolName)
+		readOnly := s.profile.ReadOnly
 		s.mu.RUnlock()
-		if denied {
+		if readOnly && !readOnlyToolAllowed(toolName) {
 			return mcp.NewToolResultError("tool unavailable in read-only session"), nil
+		}
+		if readOnly && readOnlyPlanWrite(toolName) && !s.ownTask(req) {
+			return mcp.NewToolResultError("a read-only session may write only its own task plan"), nil
 		}
 		start := time.Now()
 
@@ -1453,8 +1456,27 @@ func readOnlyToolAllowed(name string) bool {
 	case "get_task_plan_kandev", "get_task_conversation_kandev", "ask_user_question_kandev":
 		return true
 	default:
+		return readOnlyPlanWrite(name)
+	}
+}
+
+// A read-only investigator records its proposal as its own task plan; delete
+// and cross-task writes stay unavailable.
+func readOnlyPlanWrite(name string) bool {
+	switch name {
+	case "create_task_plan_kandev", "update_task_plan_kandev", "edit_task_plan_kandev":
+		return true
+	default:
 		return false
 	}
+}
+
+func (s *Server) ownTask(req mcp.CallToolRequest) bool {
+	if s.taskID == "" {
+		return false
+	}
+	explicit := req.GetString(mcpKeyTaskID, "")
+	return explicit == "" || explicit == s.taskID
 }
 
 // registerAutomationTools retains the fixed automation authority.
@@ -2109,6 +2131,13 @@ func (s *Server) registerPlanTools() {
 		),
 		s.wrapHandler("create_task_plan_kandev", s.createTaskPlanHandler()),
 	)
+	s.registerGetTaskPlanTool()
+	s.registerTaskPlanWriteTools()
+}
+
+// registerGetTaskPlanTool is shared with the external surface so an operator
+// client can read a task's plan and its write version without write access.
+func (s *Server) registerGetTaskPlanTool() {
 	s.mcpServer.AddTool(
 		mcp.NewTool("get_task_plan_kandev",
 			mcp.WithDescription("Get the current plan for a task, including user edits and its version. task_id selects your current task by default or another task within your reach (same workspace / task tree); an outside task is rejected, never silently redirected to your own. Omit offset and limit to read the whole plan; supply either for a bounded exact fragment. Ranges count Unicode code points, not bytes. Partial reads return total length, has_more, and next_offset; continue with that offset and expected_version to avoid mixing versions. A fragment is not a replacement document: use edit_task_plan_kandev for local changes or update_task_plan_kandev with mode=\"append\" for additions."),
@@ -2119,6 +2148,9 @@ func (s *Server) registerPlanTools() {
 		),
 		s.wrapHandler("get_task_plan_kandev", s.getTaskPlanHandler()),
 	)
+}
+
+func (s *Server) registerTaskPlanWriteTools() {
 	s.mcpServer.AddTool(
 		mcp.NewTool("update_task_plan_kandev",
 			mcp.WithDescription(`Update an existing task plan. task_id selects the task whose plan to modify: your own task by default, or another task's ID to update that task's plan (allowed only within your reach — same workspace / task tree; a task outside it is rejected, never silently redirected to your own). Set mode="replace" (the default) to submit the whole document, or mode="append" to submit only an addition. Replace mode requires expected_version from get_task_plan_kandev or a successful write for an existing plan. A suspicious reduction is rejected before mutation; use edit_task_plan_kandev for a local change, or set allow_truncation=true only when the reduction is intentional and the matching version is current. In append mode you do not need to read the plan first: the server reads the stored plan and stores it, then one blank line, then your content. append is not idempotent — resubmitting the same call adds your content again.`),

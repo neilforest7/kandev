@@ -53,7 +53,7 @@ func TestPlanPartialReadProfileExposure(t *testing.T) {
 	for _, mode := range []string{ModeTask, ModeTaskTitlePending, ModeOffice, ModeConfig, ModeExternal, ModeAutomation} {
 		s := New(&testBackend{}, "session", "task", 10005, newTestLogger(t), "", false, mode)
 		tools := getRegisteredToolNames(s)
-		if mode == ModeTask || mode == ModeTaskTitlePending || mode == ModeOffice {
+		if mode == ModeTask || mode == ModeTaskTitlePending || mode == ModeOffice || mode == ModeExternal {
 			require.Contains(t, tools, "get_task_plan_kandev")
 		} else {
 			require.NotContains(t, tools, "get_task_plan_kandev")

@@ -18,11 +18,17 @@ func TestReadOnlyProfileRestrictsToolsAndCannotBeWidened(t *testing.T) {
 	profile.ReadOnly = true
 	s.SetProfile(profile)
 	tools := s.mcpServer.ListTools()
-	require.Len(t, tools, 3)
-	for _, name := range []string{"get_task_plan_kandev", "get_task_conversation_kandev", "ask_user_question_kandev"} {
+	require.Len(t, tools, 6)
+	for _, name := range []string{"get_task_plan_kandev", "get_task_conversation_kandev", "ask_user_question_kandev", "create_task_plan_kandev", "update_task_plan_kandev", "edit_task_plan_kandev"} {
 		require.Contains(t, tools, name)
 	}
-	result, err := write.Handler(context.Background(), mcp.CallToolRequest{})
+	other := mcp.CallToolRequest{}
+	other.Params.Arguments = map[string]any{"task_id": "other-task", "content": "plan"}
+	result, err := tools["create_task_plan_kandev"].Handler(context.Background(), other)
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.Contains(t, result.Content[0].(mcp.TextContent).Text, "only its own task plan")
+	result, err = write.Handler(context.Background(), mcp.CallToolRequest{})
 	require.NoError(t, err)
 	require.True(t, result.IsError)
 	profile.ReadOnly = false
@@ -41,6 +47,16 @@ func TestReadOnlyBuiltinPackagesDoNotExposeWrites(t *testing.T) {
 	profile.ReadOnly = true
 	s := NewWithProfile(&testBackend{}, "session", "task", 10005, newTestLogger(t), "", false, profile)
 	t.Cleanup(func() { require.NoError(t, s.Close(context.Background())) })
-	require.Len(t, s.mcpServer.ListTools(), 3)
+	require.Len(t, s.mcpServer.ListTools(), 6)
 	require.Empty(t, s.builtinPackages[p.PackageConfiguration].registry.ListTools())
+}
+
+func TestExternalSurfaceReadsTaskPlansOnly(t *testing.T) {
+	s := NewWithProfile(&testBackend{}, "", "", 10005, newTestLogger(t), "", false, p.Legacy(ModeExternal, true, nil))
+	t.Cleanup(func() { require.NoError(t, s.Close(context.Background())) })
+	tools := s.mcpServer.ListTools()
+	require.Contains(t, tools, "get_task_plan_kandev")
+	for _, name := range []string{"create_task_plan_kandev", "update_task_plan_kandev", "edit_task_plan_kandev", "delete_task_plan_kandev"} {
+		require.NotContains(t, tools, name)
+	}
 }
