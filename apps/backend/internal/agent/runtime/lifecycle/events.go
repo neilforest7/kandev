@@ -102,6 +102,7 @@ func copyDeliveryTerminalIdentity(
 		payload.DeliveryOutcome = string(models.DeliverySubmissionFailed)
 	} else if terminal.Data["stop_reason"] == string(models.DeliverySubmissionCancelled) {
 		payload.DeliveryOutcome = string(models.DeliverySubmissionCancelled)
+		payload.ReadOnlyDenial, _ = terminal.Data[streams.CompleteDataReadOnlyDenial].(bool)
 	}
 }
 

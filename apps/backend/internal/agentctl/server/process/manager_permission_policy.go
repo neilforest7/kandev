@@ -1,6 +1,7 @@
 package process
 
 import (
+	"maps"
 	"slices"
 	"strings"
 
@@ -164,6 +165,7 @@ func (m *Manager) denyReadOnlyPermission(req *adapter.PermissionRequest) *adapte
 	if req.ToolName != nil {
 		toolName = *req.ToolName
 	}
+	m.readOnlyDenied.Store(true)
 	option, ok := readOnlyRejectOption(req.Options)
 	if !ok {
 		m.logger.Warn("read-only profile denied a native permission request by cancelling",
@@ -176,6 +178,34 @@ func (m *Manager) denyReadOnlyPermission(req *adapter.PermissionRequest) *adapte
 		zap.String("tool_name", toolName),
 		zap.String("option_id", option.OptionID))
 	return &adapter.PermissionResponse{OptionID: option.OptionID}
+}
+
+// markReadOnlyDenialTerminal tags the terminal event of a prompt that ended
+// cancelled after the read-only policy refused one of its native permission
+// requests. Some agents can only refuse a request by aborting the turn
+// (codex-acp offers no per-request decline for file edits), and the Host must
+// tell that abort apart from a person's cancel. Every terminal event clears
+// the record so it never reaches a later prompt.
+func (m *Manager) markReadOnlyDenialTerminal(update *adapter.AgentEvent) {
+	if update.Type != adapter.EventTypeComplete && update.Type != adapter.EventTypeError {
+		return
+	}
+	if !m.readOnlyDenied.Swap(false) {
+		return
+	}
+	if update.Type != adapter.EventTypeComplete || update.Data["stop_reason"] != "cancelled" {
+		return
+	}
+	data := maps.Clone(update.Data)
+	data[streams.CompleteDataReadOnlyDenial] = true
+	update.Data = data
+}
+
+// ForgetReadOnlyDenial drops the current prompt's read-only denial record
+// before a person cancels the turn, so that cancel is never reported as a
+// read-only abort.
+func (m *Manager) ForgetReadOnlyDenial() {
+	m.readOnlyDenied.Store(false)
 }
 
 // codexCancelTurnDecision is the codex_decision metadata the Codex app-server
