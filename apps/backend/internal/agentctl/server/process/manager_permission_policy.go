@@ -154,6 +154,52 @@ func injectedKandevPermissionOption(options []adapter.PermissionOption) (adapter
 	return adapter.PermissionOption{}, false
 }
 
+// denyReadOnlyPermission refuses a native permission request from a read-only
+// session by selecting an offered per-request reject option, so the agent
+// fails that one tool call and keeps its turn. Cancelling instead would abort
+// the whole turn (Codex app-server maps it to "cancel"). It falls back to
+// Cancelled only when no such option is offered.
+func (m *Manager) denyReadOnlyPermission(req *adapter.PermissionRequest) *adapter.PermissionResponse {
+	toolName := ""
+	if req.ToolName != nil {
+		toolName = *req.ToolName
+	}
+	option, ok := readOnlyRejectOption(req.Options)
+	if !ok {
+		m.logger.Warn("read-only profile denied a native permission request by cancelling",
+			zap.String("reason", "read_only_no_reject_option"),
+			zap.String("tool_name", toolName))
+		return &adapter.PermissionResponse{Cancelled: true}
+	}
+	m.logger.Warn("read-only profile denied a native permission request",
+		zap.String("reason", "read_only"),
+		zap.String("tool_name", toolName),
+		zap.String("option_id", option.OptionID))
+	return &adapter.PermissionResponse{OptionID: option.OptionID}
+}
+
+// codexCancelTurnDecision is the codex_decision metadata the Codex app-server
+// transport puts on its "Cancel turn" option, which shares the reject_once
+// kind with the per-request "Deny" option.
+const codexCancelTurnDecision = "cancel"
+
+// readOnlyRejectOption returns the first reject_once option that refuses only
+// the current request. reject_always is skipped so a read-only refusal never
+// persists a rule (e.g. a Codex network policy amendment), and the Codex
+// cancel-turn option is skipped because it aborts the turn.
+func readOnlyRejectOption(options []adapter.PermissionOption) (adapter.PermissionOption, bool) {
+	for _, option := range options {
+		if normalizePermissionOptionKind(option.Kind) != streams.PermissionOptionKindRejectOnce {
+			continue
+		}
+		if decision, _ := option.Metadata["codex_decision"].(string); decision == codexCancelTurnDecision {
+			continue
+		}
+		return option, true
+	}
+	return adapter.PermissionOption{}, false
+}
+
 // normalizePermissionOptionKind folds the surface spelling differences that
 // separate providers produce. A kind Kandev fails to recognize is treated as
 // "not an allow", which turns an approval into a refusal, so the comparison

@@ -3770,7 +3770,7 @@ func (m *Manager) handlePermissionRequest(ctx context.Context, req *adapter.Perm
 		if response, approved := m.autoApproveInjectedKandevPermission(req); approved {
 			return response, nil
 		}
-		return &adapter.PermissionResponse{Cancelled: true}, nil
+		return m.denyReadOnlyPermission(req), nil
 	}
 	m.logger.Info("handling permission request",
 		zap.String("pending_id", pendingID),
