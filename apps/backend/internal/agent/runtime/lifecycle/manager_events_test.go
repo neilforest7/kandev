@@ -2413,3 +2413,43 @@ func TestHandleCompleteEventMarkState_SuccessKeepsExecution(t *testing.T) {
 		t.Errorf("expected status %q after success, got %q", v1.AgentStatusReady, got.Status)
 	}
 }
+
+func TestHandleAgentEvent_ReadOnlyDenialReachesTheReadyPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data map[string]any
+		want bool
+	}{
+		{name: "read-only abort", data: map[string]any{"stop_reason": "cancelled", streams.CompleteDataReadOnlyDenial: true}, want: true},
+		{name: "user cancel", data: map[string]any{"stop_reason": "cancelled"}},
+		{name: "finished turn", data: map[string]any{"stop_reason": "end_turn", streams.CompleteDataReadOnlyDenial: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, eventBus := createTestManagerWithTracking()
+			execution := createTestExecution("exec-read-only", "task-1", "session-1")
+			if err := mgr.executionStore.Add(execution); err != nil {
+				t.Fatalf("add execution: %v", err)
+			}
+			generation, err := mgr.executionStore.BeginPrompt(execution.ID)
+			if err != nil {
+				t.Fatalf("begin prompt: %v", err)
+			}
+			mgr.handleAgentEvent(execution, agentctl.AgentEvent{
+				Type: streams.EventTypeComplete, SessionID: execution.SessionID,
+				PromptGeneration: generation, Data: tc.data,
+			})
+			for _, published := range eventBus.PublishedEvents {
+				if published.Subject != events.AgentReady {
+					continue
+				}
+				if payload, ok := published.Event.Data.(AgentEventPayload); ok {
+					if payload.ReadOnlyDenial != tc.want {
+						t.Fatalf("ready payload read_only_denial = %v, want %v", payload.ReadOnlyDenial, tc.want)
+					}
+					return
+				}
+			}
+			t.Fatal("AgentReady payload was not published")
+		})
+	}
+}

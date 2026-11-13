@@ -314,6 +314,11 @@ type Manager struct {
 	permissionTombstoneOrder []string
 	permissionMu             sync.RWMutex
 
+	// readOnlyDenied records that the read-only policy refused a native
+	// permission request during the current prompt (see
+	// markReadOnlyDenialTerminal).
+	readOnlyDenied atomic.Bool
+
 	// VS Code server manager (lazy-initialized on demand)
 	vscode   *VscodeManager
 	vscodeMu sync.Mutex
@@ -2633,6 +2638,7 @@ func (m *Manager) forwardUpdates(agentAdapter adapter.AgentAdapter, stopCh <-cha
 			return
 		}
 		update.DeliverySubmissionID = m.deliverySubmissionIDForEvent(update)
+		m.markReadOnlyDenialTerminal(&update)
 		m.syncOpenCodePluginClaims(agentAdapter)
 		if suppressOrdinaryOutput && !isTerminalDeliveryEvent(update) {
 			if update.DeliverySubmissionID == "" || update.DeliverySubmissionID == suppressedSubmissionID {
@@ -3770,7 +3776,7 @@ func (m *Manager) handlePermissionRequest(ctx context.Context, req *adapter.Perm
 		if response, approved := m.autoApproveInjectedKandevPermission(req); approved {
 			return response, nil
 		}
-		return &adapter.PermissionResponse{Cancelled: true}, nil
+		return m.denyReadOnlyPermission(req), nil
 	}
 	m.logger.Info("handling permission request",
 		zap.String("pending_id", pendingID),

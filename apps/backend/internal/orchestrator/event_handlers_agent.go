@@ -1189,6 +1189,11 @@ func (s *Service) handleAgentReady(ctx context.Context, data watcher.AgentEventD
 		return
 	}
 
+	if data.ReadOnlyDenial {
+		s.finishReadOnlyDenialTurn(completionCtx, data.TaskID, data.SessionID, session)
+		return
+	}
+
 	if s.drainQueuedBeforeWorkflowTransition(completionCtx, data.TaskID, data.SessionID, session) {
 		return
 	}

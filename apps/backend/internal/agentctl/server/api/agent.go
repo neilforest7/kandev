@@ -1441,6 +1441,7 @@ func (s *Server) handleWSCancel(ctx context.Context, msg *ws.Message) *ws.Messag
 		return resp
 	}
 
+	s.procMgr.ForgetReadOnlyDenial()
 	if err := adapter.Cancel(ctx); err != nil {
 		notAck := errors.Is(err, acptransport.ErrTurnCancelNotAcknowledged)
 		if notAck {

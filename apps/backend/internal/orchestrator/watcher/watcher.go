@@ -54,6 +54,7 @@ type AgentEventData struct {
 	DeliverySequence          uint64                                `json:"delivery_sequence,omitempty"`
 	DeliverySubmissionID      string                                `json:"delivery_submission_id,omitempty"`
 	DeliveryOutcome           string                                `json:"delivery_outcome,omitempty"`
+	ReadOnlyDenial            bool                                  `json:"read_only_denial,omitempty"`
 	Status                    string                                `json:"status,omitempty"`
 	ExitCode                  *int                                  `json:"exit_code,omitempty"`
 	ErrorMessage              string                                `json:"error_message,omitempty"`

@@ -30,6 +30,7 @@ type AgentEventPayload struct {
 	DeliverySequence          uint64                           `json:"delivery_sequence,omitempty"`
 	DeliverySubmissionID      string                           `json:"delivery_submission_id,omitempty"`
 	DeliveryOutcome           string                           `json:"delivery_outcome,omitempty"`
+	ReadOnlyDenial            bool                             `json:"read_only_denial,omitempty"`
 	AgentID                   string                           `json:"agent_id,omitempty"`
 	AgentProfileID            string                           `json:"agent_profile_id"`
 	ExecutionProfileID        string                           `json:"execution_profile_id,omitempty"`

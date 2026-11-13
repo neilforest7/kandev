@@ -16,6 +16,11 @@ const (
 	PermissionErrorDeliveryFailed   = "permission_delivery_failed"
 )
 
+// CompleteDataReadOnlyDenial is the complete-event Data key agentctl sets to
+// true when a prompt ended cancelled after the read-only policy refused one of
+// its native permission requests, so the turn was not cancelled by a person.
+const CompleteDataReadOnlyDenial = "read_only_denial"
+
 // PermissionActionType categorizes the kind of action requiring approval.
 // Values are stable wire-format strings shared across agentctl, the backend
 // orchestrator, and the frontend.
