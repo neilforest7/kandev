@@ -259,6 +259,66 @@ func TestRuntimeHealthResumesAfterMaintenance(t *testing.T) {
 	successLease()
 }
 
+func TestRuntimeHealthToleratesTransientDeadlineMisses(t *testing.T) {
+	conn, _, tracker, health := newSQLiteHealthFixture(t, []Descriptor{{
+		ID: "first", OwnerPackage: "owner/first", RequiredTables: []string{"first"}, Sweep: startup.StepStoresRepositories,
+	}})
+	if _, err := conn.Exec("CREATE TABLE first (id TEXT PRIMARY KEY)"); err != nil {
+		t.Fatalf("create first table: %v", err)
+	}
+	if err := tracker.RecordSuccess("first"); err != nil {
+		t.Fatalf("RecordSuccess: %v", err)
+	}
+	if err := health.Check(context.Background()); err != nil {
+		t.Fatalf("initial Check: %v", err)
+	}
+	probe := func(timeout time.Duration) error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		deferred, err := health.checkRuntime(ctx)
+		if deferred {
+			t.Fatal("checkRuntime deferred without maintenance")
+		}
+		return err
+	}
+	missDeadlines := func(count int) {
+		t.Helper()
+		for range count {
+			if err := probe(25 * time.Millisecond); err == nil {
+				t.Fatal("checkRuntime returned nil while the writer was held")
+			}
+		}
+	}
+
+	tx := holdWriter(t, conn)
+	missDeadlines(2)
+	if !health.Healthy() {
+		t.Fatal("health became unhealthy after two deadline misses")
+	}
+	missDeadlines(1)
+	if health.Healthy() {
+		t.Fatal("health remained healthy after three consecutive deadline misses")
+	}
+	_ = tx.Rollback()
+	if err := probe(time.Second); err != nil || !health.Healthy() {
+		t.Fatalf("recovery probe = %v, healthy %v; want nil, true", err, health.Healthy())
+	}
+
+	tx = holdWriter(t, conn)
+	missDeadlines(2)
+	if !health.Healthy() {
+		t.Fatal("a successful probe did not reset the deadline miss count")
+	}
+	_ = tx.Rollback()
+
+	if _, err := conn.Exec("DROP TABLE first"); err != nil {
+		t.Fatalf("drop first table: %v", err)
+	}
+	if err := probe(time.Second); err == nil || health.Healthy() {
+		t.Fatalf("missing-table probe = %v, healthy %v; want an immediate unhealthy state", err, health.Healthy())
+	}
+}
+
 func TestRuntimeHealthProbeFailureLogsBoundedStageAndRecovers(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -382,8 +442,8 @@ func TestRuntimeHealthProbeFailureLogsBoundedStageAndRecovers(t *testing.T) {
 			if _, ok := fields["error"]; ok {
 				t.Fatalf("failure warning exposed raw error: %#v", fields["error"])
 			}
-			if health.Healthy() {
-				t.Fatal("health remained healthy after a timed-out probe")
+			if !health.Healthy() {
+				t.Fatal("health became unhealthy after a single timed-out runtime probe")
 			}
 
 			if err := tx.Rollback(); err != nil {
