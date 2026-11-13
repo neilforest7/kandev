@@ -1234,10 +1234,10 @@ func TestServerModeExternal_RegistersCorrectTools(t *testing.T) {
 	assert.Contains(t, agentProfileDescription, "parent task profile")
 	assert.Contains(t, agentProfileDescription, "External mode never copies creator-session runtime values")
 
-	// External mode does NOT include session-scoped tools
+	// External mode does NOT include session-scoped tools; it may read a task plan
 	assert.NotContains(t, tools, "ask_user_question_kandev")
 	assert.NotContains(t, tools, "create_task_plan_kandev")
-	assert.NotContains(t, tools, "get_task_plan_kandev")
+	assert.Contains(t, tools, "get_task_plan_kandev")
 	assert.NotContains(t, tools, "update_task_plan_kandev")
 	assert.NotContains(t, tools, "delete_task_plan_kandev")
 
@@ -1262,9 +1262,9 @@ func TestServerModeExternal_ToolCount(t *testing.T) {
 	s := New(backend, "", "", 0, log, "", true, ModeExternal)
 	tools := getRegisteredToolNames(s)
 	// Baseline 42 tools plus the five compact settings tools, the audited
-	// cross-workspace transfer tool, and generic task update.
+	// cross-workspace transfer tool, generic task update, and the task plan read.
 	// add_branch_to_task_kandev is task-mode only — external coding agents have no live session to attach a worktree to.
-	assert.Equal(t, 51, len(tools))
+	assert.Equal(t, 52, len(tools))
 	assert.NotContains(t, tools, "add_branch_to_task_kandev")
 }
 
