@@ -22,6 +22,10 @@ import (
 const (
 	defaultProbeInterval = 15 * time.Second
 	probeTimeout         = 2 * time.Second
+	// deadlineFailureLimit is how many consecutive runtime probes must miss
+	// their deadline before the stores are marked unhealthy. Brief pool
+	// contention can delay one probe without the database being unavailable.
+	deadlineFailureLimit = 3
 )
 
 // Health probes the shared database and every table declared by the catalog.
@@ -40,6 +44,8 @@ type Health struct {
 	lastLoggedState    State
 	lastLoggedStoreIDs []string
 	hasLoggedState     bool
+
+	deadlineFailures int
 }
 
 type probeFailureDiagnostic struct {
@@ -75,6 +81,14 @@ func (h *Health) Check(ctx context.Context) error {
 }
 
 func (h *Health) check(ctx context.Context) (*probeFailureDiagnostic, error) {
+	return h.probe(ctx, false)
+}
+
+// probe runs one probe and records its results. When toleratesDeadline is
+// set, a probe whose only failures are deadline misses is not recorded until
+// deadlineFailureLimit consecutive probes have missed their deadline; any
+// other failure is recorded immediately.
+func (h *Health) probe(ctx context.Context, toleratesDeadline bool) (*probeFailureDiagnostic, error) {
 	if h == nil || h.tracker == nil {
 		return nil, errors.New("required-store health tracker is unavailable")
 	}
@@ -99,11 +113,14 @@ func (h *Health) check(ctx context.Context) (*probeFailureDiagnostic, error) {
 			}
 		}
 	}
+	deferred := toleratesDeadline && h.deferDeadlineFailure(results)
 	var failures []error
 	for index, result := range results {
-		if err := h.tracker.RecordProbe(h.tracker.catalog[index].ID, result); err != nil {
-			failures = append(failures, err)
-			continue
+		if !deferred {
+			if err := h.tracker.RecordProbe(h.tracker.catalog[index].ID, result); err != nil {
+				failures = append(failures, err)
+				continue
+			}
 		}
 		if result != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", h.tracker.catalog[index].ID, result))
@@ -149,8 +166,33 @@ func (h *Health) checkRuntimeDetailed(
 		}
 		defer release()
 	}
-	diagnostic, err = h.check(ctx)
+	diagnostic, err = h.probe(ctx, true)
 	return false, diagnostic, err
+}
+
+// deferDeadlineFailure counts consecutive probes whose only failures are
+// deadline misses and reports whether this one should leave the recorded
+// state unchanged. A success or any other failure resets the count.
+func (h *Health) deferDeadlineFailure(results []error) bool {
+	failed := false
+	for _, result := range results {
+		if result == nil {
+			continue
+		}
+		if classifyProbeError(result) != "deadline_exceeded" {
+			failed = false
+			break
+		}
+		failed = true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !failed {
+		h.deadlineFailures = 0
+		return false
+	}
+	h.deadlineFailures++
+	return h.deadlineFailures < deadlineFailureLimit
 }
 
 func (h *Health) isSQLite() bool {
